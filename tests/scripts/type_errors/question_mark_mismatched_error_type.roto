@@ -1,0 +1,12 @@
+fn half(x: u32) -> Result[u32, i32] {
+    if x % 2 == 0 {
+        Ok(x / 2)
+    } else {
+        Err(1)
+    }
+}
+
+fn foo(x: u32) -> Result[u32, String] {
+    let y = half(x)?;
+    Ok(y + 1)
+}

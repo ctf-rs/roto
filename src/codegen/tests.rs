@@ -2677,6 +2677,351 @@ fn question_mark_none() {
 }
 
 #[test]
+fn question_mark_result() {
+    let s = src!(
+        r#"
+        fn half(x: u32) -> Result[u32, String] {
+            if x % 2 == 0 {
+                Ok(x / 2)
+            } else {
+                Err("odd number")
+            }
+        }
+
+        fn foo(x: u32) -> Result[u32, String] {
+            let y = half(x)?;
+            Ok(y + 1)
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(u32) -> Result<u32, RotoString>>("foo")
+        .unwrap();
+
+    let res = f.call(4);
+    assert_eq!(res, Ok(3));
+    let res = f.call(3);
+    assert_eq!(res, Err("odd number".into()));
+}
+
+#[test]
+fn question_mark_result_in_chain() {
+    let s = src!(
+        r#"
+        fn half(x: u32) -> Result[u32, String] {
+            if x % 2 == 0 {
+                Ok(x / 2)
+            } else {
+                Err("odd number")
+            }
+        }
+
+        fn foo(x: u32) -> Result[u32, String] {
+            Ok(half(x)? + half(x)?)
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(u32) -> Result<u32, RotoString>>("foo")
+        .unwrap();
+
+    let res = f.call(4);
+    assert_eq!(res, Ok(4));
+    let res = f.call(3);
+    assert_eq!(res, Err("odd number".into()));
+}
+
+#[test]
+fn question_mark_verdict() {
+    let s = src!(
+        r#"
+        fn positive(x: i32) -> Verdict[i32, String] {
+            if x > 0 {
+                Verdict.Accept(x)
+            } else {
+                Verdict.Reject("not positive")
+            }
+        }
+
+        fn foo(x: i32) -> Verdict[i32, String] {
+            let y = positive(x)?;
+            Verdict.Accept(y * 2)
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, RotoString>>("foo")
+        .unwrap();
+
+    let res = f.call(5);
+    assert_eq!(res, Verdict::Accept(10));
+    let res = f.call(-1);
+    assert_eq!(res, Verdict::Reject("not positive".into()));
+}
+
+#[test]
+fn question_mark_verdict_in_filtermap() {
+    let s = src!(
+        r#"
+        fn positive(x: i32) -> Verdict[i32, String] {
+            if x > 0 {
+                Verdict.Accept(x)
+            } else {
+                Verdict.Reject("not positive")
+            }
+        }
+
+        filtermap main(x: i32) {
+            let y = positive(x)?;
+            accept y * 2
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, RotoString>>("main")
+        .unwrap();
+
+    let res = f.call(5);
+    assert_eq!(res, Verdict::Accept(10));
+    let res = f.call(-1);
+    assert_eq!(res, Verdict::Reject("not positive".into()));
+}
+
+#[test]
+fn option_is_some_is_none() {
+    let s = src!(
+        "
+        fn check(x: u32?) -> bool {
+            x.is_some()
+        }
+
+        fn check_none(x: u32?) -> bool {
+            x.is_none()
+        }
+        "
+    );
+
+    let mut p = compile(s);
+    let is_some = p.get_function::<fn(Option<u32>) -> bool>("check").unwrap();
+    let is_none = p
+        .get_function::<fn(Option<u32>) -> bool>("check_none")
+        .unwrap();
+
+    assert!(is_some.call(Some(1)));
+    assert!(!is_some.call(None));
+    assert!(!is_none.call(Some(1)));
+    assert!(is_none.call(None));
+}
+
+#[test]
+fn result_is_ok_is_err() {
+    let s = src!(
+        r#"
+        fn check(x: Result[u32, String]) -> bool {
+            x.is_ok()
+        }
+
+        fn check_err(x: Result[u32, String]) -> bool {
+            x.is_err()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let is_ok = p
+        .get_function::<fn(Result<u32, RotoString>) -> bool>("check")
+        .unwrap();
+    let is_err = p
+        .get_function::<fn(Result<u32, RotoString>) -> bool>("check_err")
+        .unwrap();
+
+    assert!(is_ok.call(Ok(1)));
+    assert!(!is_ok.call(Err("oops".into())));
+    assert!(!is_err.call(Ok(1)));
+    assert!(is_err.call(Err("oops".into())));
+}
+
+#[test]
+fn option_unwrap_or() {
+    let s = src!(
+        "
+        fn foo(x: u32?) -> u32 {
+            x.unwrap_or(42)
+        }
+        "
+    );
+
+    let mut p = compile(s);
+    let f = p.get_function::<fn(Option<u32>) -> u32>("foo").unwrap();
+
+    assert_eq!(f.call(Some(10)), 10);
+    assert_eq!(f.call(None), 42);
+}
+
+/// `unwrap_or_default` only exists for `T = ()` (see the doc comment on
+/// `Intrinsic::OptionUnwrapOrDefault`), mirroring how a bare `accept`/
+/// `reject` (no expression) always produces `()` - there's no generic
+/// "default value" for an arbitrary `T` in Roto.
+#[test]
+fn option_unwrap_or_default() {
+    let s = src!(
+        "
+        fn foo(x: ()?) -> () {
+            x.unwrap_or_default()
+        }
+        "
+    );
+
+    let mut p = compile(s);
+    let f = p.get_function::<fn(Option<()>) -> ()>("foo").unwrap();
+
+    f.call(Some(()));
+    f.call(None);
+}
+
+/// Regression test: `unwrap_or_default` doesn't branch on the receiver at
+/// all (the result is always `()`), so the receiver itself - which may
+/// carry a real heap-allocated value in the *other* Result variant - must
+/// still be dropped exactly once via the normal scope-exit path.
+#[test]
+fn result_unwrap_or_default_string_err_not_leaked_or_double_dropped() {
+    let s = src!(
+        r#"
+        fn foo(x: Result[(), String]) -> () {
+            x.unwrap_or_default()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Result<(), RotoString>) -> ()>("foo")
+        .unwrap();
+
+    for _ in 0..1000 {
+        f.call(Ok(()));
+        f.call(Err("oops".into()));
+    }
+}
+
+/// Regression test: `unwrap_or`'s "default" branch is only used when the
+/// receiver is `None`. When the receiver is `Some`, that default value
+/// (here a heap-allocated `RotoString`, unlike the plain integer default
+/// in `option_unwrap_or` above) must still be dropped exactly once,
+/// instead of leaking or being double-dropped by later scope-exit
+/// cleanup. Run under AddressSanitizer/valgrind to actually catch a
+/// regression here; a plain `cargo test` run can pass even with a
+/// use-after-free or double-free in the generated code.
+#[test]
+fn option_unwrap_or_string_default_not_double_dropped() {
+    let s = src!(
+        r#"
+        fn foo(x: String?) -> String {
+            x.unwrap_or("default")
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Option<RotoString>) -> RotoString>("foo")
+        .unwrap();
+
+    assert_eq!(f.call(Some("hello".into())), "hello".into());
+    assert_eq!(f.call(None), "default".into());
+    // Calling repeatedly increases the odds of exposing a leak/double-drop
+    // under a sanitizer without needing one to inspect a single call.
+    for _ in 0..1000 {
+        assert_eq!(f.call(Some("hello".into())), "hello".into());
+        assert_eq!(f.call(None), "default".into());
+    }
+}
+
+#[test]
+fn result_unwrap_or() {
+    let s = src!(
+        r#"
+        fn foo(x: Result[u32, String]) -> u32 {
+            x.unwrap_or(42)
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Result<u32, RotoString>) -> u32>("foo")
+        .unwrap();
+
+    assert_eq!(f.call(Ok(10)), 10);
+    assert_eq!(f.call(Err("oops".into())), 42);
+}
+
+#[test]
+fn result_unwrap_or_default() {
+    let s = src!(
+        r#"
+        fn foo(x: Result[(), String]) -> () {
+            x.unwrap_or_default()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Result<(), RotoString>) -> ()>("foo")
+        .unwrap();
+
+    f.call(Ok(()));
+    f.call(Err("oops".into()));
+}
+
+#[test]
+fn option_ok_or() {
+    let s = src!(
+        r#"
+        fn foo(x: u32?) -> Result[u32, String] {
+            x.ok_or("missing")
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Option<u32>) -> Result<u32, RotoString>>("foo")
+        .unwrap();
+
+    assert_eq!(f.call(Some(10)), Ok(10));
+    assert_eq!(f.call(None), Err("missing".into()));
+}
+
+#[test]
+fn result_ok() {
+    let s = src!(
+        r#"
+        fn foo(x: Result[u32, String]) -> u32? {
+            x.ok()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Result<u32, RotoString>) -> Option<u32>>("foo")
+        .unwrap();
+
+    assert_eq!(f.call(Ok(10)), Some(10));
+    assert_eq!(f.call(Err("oops".into())), None);
+}
+
+#[test]
 fn top_level_import() {
     let pkg = source_file!(
         "pkg",
@@ -6124,4 +6469,649 @@ fn list_get_from_const() {
     let f = pkg.get_function::<fn() -> Option<i32>>("main").unwrap();
 
     assert_eq!(f.call(), Some(42));
+}
+
+#[test]
+fn result_err() {
+    let s = src!(
+        r#"
+        fn foo(x: Result[u32, String]) -> String? {
+            x.err()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Result<u32, RotoString>) -> Option<RotoString>>(
+            "foo",
+        )
+        .unwrap();
+
+    assert_eq!(f.call(Ok(10)), None);
+    assert_eq!(f.call(Err("oops".into())), Some("oops".into()));
+}
+
+#[test]
+fn verdict_is_accept_is_reject() {
+    let s = src!(
+        r#"
+        fn acc(x: Verdict[u32, String]) -> bool {
+            x.is_accept()
+        }
+
+        fn rej(x: Verdict[u32, String]) -> bool {
+            x.is_reject()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let acc = p
+        .get_function::<fn(Verdict<u32, RotoString>) -> bool>("acc")
+        .unwrap();
+    let rej = p
+        .get_function::<fn(Verdict<u32, RotoString>) -> bool>("rej")
+        .unwrap();
+
+    assert!(acc.call(Verdict::Accept(1)));
+    assert!(!acc.call(Verdict::Reject("no".into())));
+    assert!(!rej.call(Verdict::Accept(1)));
+    assert!(rej.call(Verdict::Reject("no".into())));
+}
+
+#[test]
+fn verdict_accepted_rejected() {
+    let s = src!(
+        r#"
+        fn acc(x: Verdict[u32, String]) -> u32? {
+            x.accepted()
+        }
+
+        fn rej(x: Verdict[u32, String]) -> String? {
+            x.rejected()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let acc = p
+        .get_function::<fn(Verdict<u32, RotoString>) -> Option<u32>>("acc")
+        .unwrap();
+    let rej = p
+        .get_function::<fn(Verdict<u32, RotoString>) -> Option<RotoString>>(
+            "rej",
+        )
+        .unwrap();
+
+    assert_eq!(acc.call(Verdict::Accept(7)), Some(7));
+    assert_eq!(acc.call(Verdict::Reject("no".into())), None);
+    assert_eq!(rej.call(Verdict::Accept(7)), None);
+    assert_eq!(rej.call(Verdict::Reject("no".into())), Some("no".into()));
+}
+
+#[test]
+fn verdict_unwrap_or() {
+    let s = src!(
+        r#"
+        fn foo(x: Verdict[u32, String]) -> u32 {
+            x.unwrap_or(42)
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Verdict<u32, RotoString>) -> u32>("foo")
+        .unwrap();
+
+    assert_eq!(f.call(Verdict::Accept(10)), 10);
+    assert_eq!(f.call(Verdict::Reject("no".into())), 42);
+}
+
+#[test]
+fn verdict_unwrap_or_default() {
+    let s = src!(
+        r#"
+        fn foo(x: Verdict[(), String]) -> () {
+            x.unwrap_or_default()
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Verdict<(), RotoString>) -> ()>("foo")
+        .unwrap();
+
+    f.call(Verdict::Accept(()));
+    f.call(Verdict::Reject("no".into()));
+}
+
+/// The headline feature: `unwrap_or_reject` yields the value on success,
+/// or bails out of the enclosing filtermap entirely with `Reject(reason)`
+/// - no `?` needed.
+#[test]
+fn option_unwrap_or_reject_in_filtermap() {
+    let s = src!(
+        r#"
+        fn maybe(x: i32) -> i32? {
+            if x > 0 { Some(x) } else { None }
+        }
+
+        filtermap main(x: i32) {
+            let y = maybe(x).unwrap_or_reject("not positive");
+            accept y * 2
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, RotoString>>("main")
+        .unwrap();
+
+    assert_eq!(f.call(5), Verdict::Accept(10));
+    assert_eq!(f.call(-1), Verdict::Reject("not positive".into()));
+}
+
+/// `unwrap_or_accept` is the "fail open" bail-out, and is the one thing
+/// the `?` operator fundamentally cannot express, since `?` only ever
+/// early-returns the *failure* variant.
+#[test]
+fn option_unwrap_or_accept_in_filtermap() {
+    let s = src!(
+        r#"
+        fn maybe(x: i32) -> i32? {
+            if x > 0 { Some(x) } else { None }
+        }
+
+        filtermap main(x: i32) {
+            let y = maybe(x).unwrap_or_accept(999);
+            accept y * 2
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    // Nothing constrains the reject type here, so it resolves to `()`.
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, ()>>("main")
+        .unwrap();
+
+    assert_eq!(f.call(5), Verdict::Accept(10));
+    // Bailed out with Accept(999) *without* doubling it.
+    assert_eq!(f.call(-1), Verdict::Accept(999));
+}
+
+#[test]
+fn unwrap_or_reject_and_accept_default_in_filtermap() {
+    let s = src!(
+        "
+        fn maybe(x: i32) -> i32? {
+            if x > 0 { Some(x) } else { None }
+        }
+
+        filtermap rejects(x: i32) {
+            let y = maybe(x).unwrap_or_reject_default();
+            accept y * 2
+        }
+
+        filtermap accepts(x: i32) {
+            let y = maybe(x).unwrap_or_accept_default();
+            reject
+        }
+        "
+    );
+
+    let mut p = compile(s);
+    let rejects = p
+        .get_function::<fn(i32) -> Verdict<i32, ()>>("rejects")
+        .unwrap();
+    assert_eq!(rejects.call(5), Verdict::Accept(10));
+    assert_eq!(rejects.call(-1), Verdict::Reject(()));
+
+    // `unwrap_or_accept_default()` forces the accept type to `()`. The
+    // body always rejects, so an `Accept` here can only have come from
+    // the bail-out, making it directly observable.
+    let accepts = p
+        .get_function::<fn(i32) -> Verdict<(), ()>>("accepts")
+        .unwrap();
+    assert_eq!(accepts.call(5), Verdict::Reject(()));
+    assert_eq!(accepts.call(-1), Verdict::Accept(()));
+}
+
+#[test]
+fn result_unwrap_or_reject_in_filtermap() {
+    let s = src!(
+        r#"
+        fn parse(x: i32) -> Result[i32, String] {
+            if x > 0 { Ok(x) } else { Err("bad input") }
+        }
+
+        filtermap main(x: i32) {
+            let y = parse(x).unwrap_or_reject("rejected by policy");
+            accept y * 2
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, RotoString>>("main")
+        .unwrap();
+
+    assert_eq!(f.call(5), Verdict::Accept(10));
+    // The Result's own `E` ("bad input") is discarded in favour of the
+    // caller-supplied reject reason, which is a different value.
+    assert_eq!(f.call(-1), Verdict::Reject("rejected by policy".into()));
+}
+
+/// A `Verdict` receiver whose reject type differs from the enclosing
+/// filtermap's: `unwrap_or_reject` remaps the reason, which plain `?`
+/// could not do (it requires both `R`s to match exactly).
+#[test]
+fn verdict_unwrap_or_reject_remaps_reason() {
+    let s = src!(
+        r#"
+        fn check(x: i32) -> Verdict[i32, i32] {
+            if x > 0 { Verdict.Accept(x) } else { Verdict.Reject(-1) }
+        }
+
+        filtermap main(x: i32) {
+            let y = check(x).unwrap_or_reject("failed check");
+            accept y * 2
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, RotoString>>("main")
+        .unwrap();
+
+    assert_eq!(f.call(5), Verdict::Accept(10));
+    assert_eq!(f.call(-1), Verdict::Reject("failed check".into()));
+}
+
+/// Regression test for the drop bookkeeping in `intrinsic_early_return`:
+/// the reason is consumed only on the bail-out path and must be dropped
+/// exactly once on the success path, while the receiver's own discarded
+/// payload must also be dropped exactly once. Run under
+/// AddressSanitizer/LeakSanitizer to actually catch a regression.
+#[test]
+fn unwrap_or_reject_string_not_leaked_or_double_dropped() {
+    let s = src!(
+        r#"
+        fn parse(x: i32) -> Result[i32, String] {
+            if x > 0 { Ok(x) } else { Err("a heap allocated error") }
+        }
+
+        filtermap main(x: i32) {
+            let y = parse(x).unwrap_or_reject("a heap allocated reason");
+            accept y
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(i32) -> Verdict<i32, RotoString>>("main")
+        .unwrap();
+
+    for _ in 0..1000 {
+        assert_eq!(f.call(5), Verdict::Accept(5));
+        assert_eq!(
+            f.call(-1),
+            Verdict::Reject("a heap allocated reason".into())
+        );
+    }
+}
+
+/// Regression test: these methods can also be called through the
+/// equivalent function-call syntax, in which case the typechecker
+/// resolves them as a plain function and `self` arrives as the first
+/// ordinary argument rather than as a separate receiver. That used to
+/// panic the compiler during lowering.
+#[test]
+fn intrinsic_as_function_call() {
+    let s = src!(
+        "
+        fn is_some(x: u32?) -> bool {
+            Option.is_some(x)
+        }
+
+        fn unwrap_or(x: u32?) -> u32 {
+            Option.unwrap_or(x, 42)
+        }
+
+        fn ok(x: Result[u32, u32]) -> u32? {
+            Result.ok(x)
+        }
+        "
+    );
+
+    let mut p = compile(s);
+
+    let f = p
+        .get_function::<fn(Option<u32>) -> bool>("is_some")
+        .unwrap();
+    assert!(f.call(Some(1)));
+    assert!(!f.call(None));
+
+    let f = p
+        .get_function::<fn(Option<u32>) -> u32>("unwrap_or")
+        .unwrap();
+    assert_eq!(f.call(Some(10)), 10);
+    assert_eq!(f.call(None), 42);
+
+    let f = p
+        .get_function::<fn(Result<u32, u32>) -> Option<u32>>("ok")
+        .unwrap();
+    assert_eq!(f.call(Ok(7)), Some(7));
+    assert_eq!(f.call(Err(1)), None);
+}
+
+/// As above, but reached through an `import`, which is the other way to
+/// spell the function-call form.
+#[test]
+fn intrinsic_as_imported_function() {
+    let s = src!(
+        "
+        import Option.unwrap_or;
+
+        fn foo(x: u32?) -> u32 {
+            unwrap_or(x, 42)
+        }
+        "
+    );
+
+    let mut p = compile(s);
+    let f = p.get_function::<fn(Option<u32>) -> u32>("foo").unwrap();
+
+    assert_eq!(f.call(Some(10)), 10);
+    assert_eq!(f.call(None), 42);
+}
+
+/// The function-call form is also reachable while lowering a constant,
+/// which is a different lowering entry point to a function body.
+#[test]
+fn intrinsic_as_function_call_in_constant() {
+    let s = src!(
+        "
+        const PRESENT: bool = Option.is_some(Option.Some(1));
+
+        fn foo() -> bool {
+            PRESENT
+        }
+        "
+    );
+
+    let mut p = compile(s);
+    let f = p.get_function::<fn() -> bool>("foo").unwrap();
+    assert!(f.call());
+}
+
+/// The bail-out family also works outside a `filtermap`, in any plain
+/// function that returns a `Verdict`.
+#[test]
+fn unwrap_or_reject_in_plain_verdict_function() {
+    let s = src!(
+        r#"
+        fn foo(x: u32?) -> Verdict[u32, String] {
+            let y = x.unwrap_or_reject("missing");
+            Verdict.Accept(y * 2)
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+    let f = p
+        .get_function::<fn(Option<u32>) -> Verdict<u32, RotoString>>("foo")
+        .unwrap();
+
+    assert_eq!(f.call(Some(5)), Verdict::Accept(10));
+    assert_eq!(f.call(None), Verdict::Reject("missing".into()));
+}
+
+/// The `Result` and `Verdict` members of the bail-out family that the
+/// other tests don't reach.
+#[test]
+fn result_and_verdict_bail_out_family() {
+    let s = src!(
+        r#"
+        fn r(x: i32) -> Result[i32, String] {
+            if x > 0 { Ok(x) } else { Err("bad") }
+        }
+
+        fn v(x: i32) -> Verdict[i32, String] {
+            if x > 0 { Verdict.Accept(x) } else { Verdict.Reject("bad") }
+        }
+
+        filtermap result_reject_default(x: i32) {
+            let y = r(x).unwrap_or_reject_default();
+            accept y
+        }
+
+        filtermap result_accept(x: i32) {
+            let y = r(x).unwrap_or_accept(999);
+            accept y * 2
+        }
+
+        filtermap result_accept_default(x: i32) {
+            let y = r(x).unwrap_or_accept_default();
+            reject
+        }
+
+        filtermap verdict_reject_default(x: i32) {
+            let y = v(x).unwrap_or_reject_default();
+            accept y
+        }
+
+        filtermap verdict_accept(x: i32) {
+            let y = v(x).unwrap_or_accept(999);
+            accept y * 2
+        }
+
+        filtermap verdict_accept_default(x: i32) {
+            let y = v(x).unwrap_or_accept_default();
+            reject
+        }
+        "#
+    );
+
+    let mut p = compile(s);
+
+    for name in ["result_reject_default", "verdict_reject_default"] {
+        let f = p.get_function::<fn(i32) -> Verdict<i32, ()>>(name).unwrap();
+        assert_eq!(f.call(5), Verdict::Accept(5), "{name}");
+        assert_eq!(f.call(-1), Verdict::Reject(()), "{name}");
+    }
+
+    for name in ["result_accept", "verdict_accept"] {
+        let f = p.get_function::<fn(i32) -> Verdict<i32, ()>>(name).unwrap();
+        assert_eq!(f.call(5), Verdict::Accept(10), "{name}");
+        // Bailed out with the value as-is, without doubling it.
+        assert_eq!(f.call(-1), Verdict::Accept(999), "{name}");
+    }
+
+    // These always reject in the body, so an Accept can only have come
+    // from the bail-out.
+    for name in ["result_accept_default", "verdict_accept_default"] {
+        let f = p.get_function::<fn(i32) -> Verdict<(), ()>>(name).unwrap();
+        assert_eq!(f.call(5), Verdict::Reject(()), "{name}");
+        assert_eq!(f.call(-1), Verdict::Accept(()), "{name}");
+    }
+}
+
+/// Clone/drop balance for the payload each intrinsic *discards*.
+///
+/// This is the bug class this family hit twice during development: a
+/// value consumed on one branch but not the other. Note that neither
+/// AddressSanitizer nor LeakSanitizer reliably catches it, because a
+/// leaked value is often still reachable from the JIT stack frame when
+/// LSAN scans; an explicit clone/drop counter is required.
+#[test]
+fn intrinsic_discarded_payloads_are_dropped_exactly_once() {
+    use std::sync::atomic::Ordering;
+
+    static CLONES: AtomicUsize = AtomicUsize::new(0);
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    struct CloneDrop {
+        clones: &'static AtomicUsize,
+        drops: &'static AtomicUsize,
+    }
+
+    impl PartialEq for CloneDrop {
+        fn eq(&self, _other: &Self) -> bool {
+            false
+        }
+    }
+
+    impl Clone for CloneDrop {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::Relaxed);
+            Self {
+                clones: self.clones,
+                drops: self.drops,
+            }
+        }
+    }
+
+    impl Drop for CloneDrop {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let rt = Runtime::from_lib(library! {
+        /// A special type for which we track the number of clones and drops
+        #[clone] type CloneDrop = Val<CloneDrop>;
+    })
+    .unwrap();
+
+    // Every function here throws away a `CloneDrop`: either the one the
+    // receiver holds, or the argument that the taken branch didn't need.
+    let s = src!(
+        "
+        fn discard_err(x: Result[u32, CloneDrop]) -> u32? {
+            x.ok()
+        }
+
+        fn discard_ok(x: Result[CloneDrop, u32]) -> u32? {
+            x.err()
+        }
+
+        fn discard_reject(x: Verdict[u32, CloneDrop]) -> u32? {
+            x.accepted()
+        }
+
+        fn discard_accept(x: Verdict[CloneDrop, u32]) -> u32? {
+            x.rejected()
+        }
+
+        fn discard_unused_default(x: u32?, d: CloneDrop) -> bool {
+            let _unused = d;
+            x.is_some()
+        }
+
+        fn discard_payload_on_bail(x: Result[u32, CloneDrop]) -> u32 {
+            x.unwrap_or(7)
+        }
+
+        fn discard_unused_unwrap_or_default(
+            x: CloneDrop?, d: CloneDrop
+        ) -> CloneDrop {
+            x.unwrap_or(d)
+        }
+        "
+    );
+
+    let mut p = compile_with_runtime(s, rt);
+    // Count the originals we hand in rather than hardcoding the number,
+    // so the balance assertion stays correct if cases are added below.
+    let originals = AtomicUsize::new(0);
+    let new = || {
+        originals.fetch_add(1, Ordering::Relaxed);
+        Val(CloneDrop {
+            clones: &CLONES,
+            drops: &DROPS,
+        })
+    };
+
+    // Both variants of each conversion, so the discarded side is
+    // exercised as well as the kept side.
+    let f = p
+        .get_function::<fn(Result<u32, Val<CloneDrop>>) -> Option<u32>>(
+            "discard_err",
+        )
+        .unwrap();
+    assert_eq!(f.call(Ok(1)), Some(1));
+    assert_eq!(f.call(Err(new())), None);
+
+    let f = p
+        .get_function::<fn(Result<Val<CloneDrop>, u32>) -> Option<u32>>(
+            "discard_ok",
+        )
+        .unwrap();
+    assert_eq!(f.call(Ok(new())), None);
+    assert_eq!(f.call(Err(2)), Some(2));
+
+    let f = p
+        .get_function::<fn(Verdict<u32, Val<CloneDrop>>) -> Option<u32>>(
+            "discard_reject",
+        )
+        .unwrap();
+    assert_eq!(f.call(Verdict::Accept(3)), Some(3));
+    assert_eq!(f.call(Verdict::Reject(new())), None);
+
+    let f = p
+        .get_function::<fn(Verdict<Val<CloneDrop>, u32>) -> Option<u32>>(
+            "discard_accept",
+        )
+        .unwrap();
+    assert_eq!(f.call(Verdict::Accept(new())), None);
+    assert_eq!(f.call(Verdict::Reject(4)), Some(4));
+
+    let f = p
+        .get_function::<fn(Option<u32>, Val<CloneDrop>) -> bool>(
+            "discard_unused_default",
+        )
+        .unwrap();
+    assert!(f.call(Some(1), new()));
+    assert!(!f.call(None, new()));
+
+    let f = p
+        .get_function::<fn(Result<u32, Val<CloneDrop>>) -> u32>(
+            "discard_payload_on_bail",
+        )
+        .unwrap();
+    assert_eq!(f.call(Ok(5)), 5);
+    assert_eq!(f.call(Err(new())), 7);
+
+    // `unwrap_or` discards whichever side the taken branch didn't use:
+    // the default when the receiver is Some, the receiver otherwise.
+    let f = p
+        .get_function::<fn(
+            Option<Val<CloneDrop>>,
+            Val<CloneDrop>,
+        ) -> Val<CloneDrop>>("discard_unused_unwrap_or_default")
+        .unwrap();
+    drop(f.call(Some(new()), new()));
+    drop(f.call(None, new()));
+
+    // Every CloneDrop that ever existed - the ones we handed in, plus
+    // any Roto cloned along the way - must have been dropped exactly
+    // once. A leak shows up as too few drops, a double free as too many.
+    let originals = originals.load(Ordering::Relaxed);
+    let clones = CLONES.load(Ordering::Relaxed);
+    let drops = DROPS.load(Ordering::Relaxed);
+    assert_eq!(
+        originals + clones,
+        drops,
+        "clone/drop imbalance: {originals} originals + {clones} clones \
+         != {drops} drops"
+    );
 }

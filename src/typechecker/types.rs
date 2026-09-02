@@ -600,6 +600,100 @@ impl Primitive {
 pub enum FunctionDefinition {
     Runtime(RuntimeFunctionRef),
     Roto,
+    /// A compiler-builtin method on Option, Result or Verdict.
+    ///
+    /// These are not backed by a real Rust function (unlike `Runtime`) or
+    /// Roto source (unlike `Roto`); instead the MIR lowerer generates their
+    /// bodies directly, similar to how the `?` operator is handled.
+    Intrinsic(Intrinsic),
+}
+
+/// A compiler-builtin operation available on Option, Result or Verdict.
+///
+/// See [`FunctionDefinition::Intrinsic`].
+///
+/// These describe the *operation*, not the receiver type: Option, Result
+/// and Verdict are structurally the same 2-variant enum (success variant
+/// at index 0 carrying one field - `Some`/`Ok`/`Accept`; failure variant
+/// at index 1 - `None`/`Err`/`Reject`), so one operation serves all three
+/// and the MIR lowering never needs to know which type it came from. The
+/// per-type names and signatures live in [`intrinsic_methods`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intrinsic {
+    /// `is_some` / `is_ok` / `is_accept`
+    IsSuccess,
+    /// `is_none` / `is_err` / `is_reject`
+    IsFailure,
+    /// `Result::ok` / `Verdict::accepted`: success -> `Some(v)`, failure -> `None`
+    SuccessToOption,
+    /// `Result::err` / `Verdict::rejected`: success -> `None`, failure -> `Some(e)`
+    FailureToOption,
+    /// `unwrap_or(default)`
+    UnwrapOr,
+    /// `unwrap_or_default()`, only for a `()` success type
+    UnwrapOrDefault,
+    /// `Option::ok_or(err)` -> `Result`
+    OkOr,
+    /// `unwrap_or_reject(reason)`: yields the success value, or early-returns
+    /// `Reject(reason)` from the enclosing function
+    UnwrapOrReject,
+    /// `unwrap_or_reject_default()`: as above, early-returning `Reject(())`
+    UnwrapOrRejectDefault,
+    /// `unwrap_or_accept(value)`: yields the success value, or early-returns
+    /// `Accept(value)` from the enclosing function
+    UnwrapOrAccept,
+    /// `unwrap_or_accept_default()`: as above, early-returning `Accept(())`
+    UnwrapOrAcceptDefault,
+}
+
+/// How an [`Intrinsic`] early-returns from the enclosing function when the
+/// receiver holds its failure variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EarlyReturn {
+    /// Return `Reject(arg)`, where `arg` is the method's own parameter.
+    Reject,
+    /// Return `Reject(())`.
+    RejectDefault,
+    /// Return `Accept(arg)`, where `arg` is the method's own parameter.
+    Accept,
+    /// Return `Accept(())`.
+    AcceptDefault,
+}
+
+impl EarlyReturn {
+    /// Whether this early return produces the `Accept` variant (rather
+    /// than `Reject`) of the enclosing function's `Verdict`.
+    pub fn is_accept(self) -> bool {
+        matches!(self, EarlyReturn::Accept | EarlyReturn::AcceptDefault)
+    }
+
+    /// Whether the returned value comes from the method's own parameter
+    /// (rather than being an implicit `()`).
+    pub fn takes_argument(self) -> bool {
+        matches!(self, EarlyReturn::Reject | EarlyReturn::Accept)
+    }
+}
+
+impl Intrinsic {
+    /// If this intrinsic early-returns from the enclosing function on the
+    /// failure variant, how it does so.
+    ///
+    /// These need the enclosing function to return a `Verdict`, so they
+    /// get extra type checking in `TypeChecker::method_call` that plain
+    /// value-producing intrinsics don't need.
+    pub fn early_return(self) -> Option<EarlyReturn> {
+        match self {
+            Intrinsic::UnwrapOrReject => Some(EarlyReturn::Reject),
+            Intrinsic::UnwrapOrRejectDefault => {
+                Some(EarlyReturn::RejectDefault)
+            }
+            Intrinsic::UnwrapOrAccept => Some(EarlyReturn::Accept),
+            Intrinsic::UnwrapOrAcceptDefault => {
+                Some(EarlyReturn::AcceptDefault)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A function that can be called from Roto
@@ -761,4 +855,367 @@ pub fn default_types() -> Vec<(Identifier, String, TypeDefinition)> {
     types.push(("List".into(), "".into(), TypeDefinition::List(list_type)));
 
     types
+}
+
+/// A compiler-builtin method to be registered on Option or Result.
+///
+/// See [`FunctionDefinition::Intrinsic`].
+pub struct IntrinsicMethodDef {
+    pub name: &'static str,
+    pub doc: &'static str,
+    pub parameter_names: Vec<Identifier>,
+    pub signature: Signature,
+    pub intrinsic: Intrinsic,
+}
+
+/// The compiler-builtin (non-`library!`) methods available on `type_ident`
+/// (one of `Option`, `Result` or `Verdict`), if any.
+///
+/// These are registered onto the type's own scope in
+/// [`super::TypeChecker::declare_builtin_types`], alongside its
+/// constructors (`Some`/`None`, `Ok`/`Err`, `Accept`/`Reject`).
+pub fn intrinsic_methods(type_ident: Identifier) -> Vec<IntrinsicMethodDef> {
+    // Type parameters of the *receiver*.
+    let t = Type::ExplicitVar("T".into());
+    let e = Type::ExplicitVar("E".into());
+    // Type parameters of the receiver, when it is a Verdict.
+    let a = Type::ExplicitVar("A".into());
+    let r = Type::ExplicitVar("R".into());
+
+    // Type parameters of the *enclosing function's* Verdict return type,
+    // used by the `unwrap_or_reject`/`unwrap_or_accept` family. These are
+    // deliberately distinct from the receiver's own parameters: a helper
+    // returning `Verdict[A, R]` may well be called from a filtermap whose
+    // own accept/reject types differ, and the value passed here belongs to
+    // the *caller's* verdict, not the receiver's.
+    let ret_a = Type::ExplicitVar("AcceptedByCaller".into());
+    let ret_r = Type::ExplicitVar("RejectedByCaller".into());
+
+    let me = || Identifier::from("self");
+
+    // The `unwrap_or_reject`/`unwrap_or_accept` family, which is identical
+    // for every receiver type: yield the success value, or bail out of the
+    // enclosing function entirely with a Verdict.
+    //
+    // `recv` is the receiver type and `success` its success-variant's type
+    // (`T` for Option[T]/Result[T, E], `A` for Verdict[A, R]); `vars` lists
+    // the receiver's own type parameters.
+    let early_returns = |recv: Type, success: Type, vars: Vec<Type>| {
+        let with = |extra: Option<&Type>| {
+            let mut v = vars.clone();
+            if let Some(x) = extra {
+                v.push(x.clone());
+            }
+            v
+        };
+        vec![
+            IntrinsicMethodDef {
+                name: "unwrap_or_reject",
+                doc: "Returns the contained success value, or immediately \
+                returns `Reject(reason)` from the enclosing function.\n\
+                \n\
+                This is the \"fail closed\" bail-out: unlike `unwrap_or`, \
+                which substitutes a value and carries on, this stops the \
+                enclosing `filtermap` (or `Verdict`-returning function) \
+                right here. `reason` is the reject value of the *enclosing* \
+                function, which need not be related to this value's own \
+                type.",
+                parameter_names: vec![me(), "reason".into()],
+                signature: Signature {
+                    types: with(Some(&ret_r)),
+                    parameter_types: vec![recv.clone(), ret_r.clone()],
+                    return_type: success.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOrReject,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or_reject_default",
+                doc: "Returns the contained success value, or immediately \
+                returns `Reject(())` from the enclosing function, i.e. a \
+                bare `reject`.\n\
+                \n\
+                Only type-checks when the enclosing function rejects with \
+                `()`; otherwise use `unwrap_or_reject(reason)`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: with(None),
+                    parameter_types: vec![recv.clone()],
+                    return_type: success.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOrRejectDefault,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or_accept",
+                doc: "Returns the contained success value, or immediately \
+                returns `Accept(value)` from the enclosing function.\n\
+                \n\
+                This is the \"fail open\" bail-out, for a firewall that \
+                would rather let something through than reject it when a \
+                parse or lookup fails. Note this cannot be expressed with \
+                `?`, which only ever early-returns the *failure* variant. \
+                `value` is the accept value of the *enclosing* function, \
+                which need not be related to this value's own type.",
+                parameter_names: vec![me(), "value".into()],
+                signature: Signature {
+                    types: with(Some(&ret_a)),
+                    parameter_types: vec![recv.clone(), ret_a.clone()],
+                    return_type: success.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOrAccept,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or_accept_default",
+                doc: "Returns the contained success value, or immediately \
+                returns `Accept(())` from the enclosing function, i.e. a \
+                bare `accept`.\n\
+                \n\
+                Only type-checks when the enclosing function accepts with \
+                `()`; otherwise use `unwrap_or_accept(value)`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: with(None),
+                    parameter_types: vec![recv.clone()],
+                    return_type: success.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOrAcceptDefault,
+            },
+        ]
+    };
+
+    let mut methods = match type_ident.as_str() {
+        "Option" => vec![
+            IntrinsicMethodDef {
+                name: "is_some",
+                doc: "Returns `true` if the option is a `Some` value.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![t.clone()],
+                    parameter_types: vec![Type::option(&t)],
+                    return_type: Type::bool(),
+                },
+                intrinsic: Intrinsic::IsSuccess,
+            },
+            IntrinsicMethodDef {
+                name: "is_none",
+                doc: "Returns `true` if the option is a `None` value.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![t.clone()],
+                    parameter_types: vec![Type::option(&t)],
+                    return_type: Type::bool(),
+                },
+                intrinsic: Intrinsic::IsFailure,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or",
+                doc: "Returns the contained `Some` value, or `default` if \
+                the option is `None`.",
+                parameter_names: vec![me(), "default".into()],
+                signature: Signature {
+                    types: vec![t.clone()],
+                    parameter_types: vec![Type::option(&t), t.clone()],
+                    return_type: t.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOr,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or_default",
+                doc: "The no-argument counterpart of `unwrap_or`. Roto \
+                has no generic \"default value\" for an arbitrary `T` \
+                (unlike Rust's `Default` trait), so this only \
+                type-checks when `T` is `()` - the one type that needs \
+                no value to construct, exactly like a bare `accept`/\
+                `reject` always producing `()`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![],
+                    parameter_types: vec![Type::option(Type::unit())],
+                    return_type: Type::unit(),
+                },
+                intrinsic: Intrinsic::UnwrapOrDefault,
+            },
+            IntrinsicMethodDef {
+                name: "ok_or",
+                doc: "Transforms the `Option[T]` into a `Result[T, E]`, \
+                mapping `Some(v)` to `Ok(v)` and `None` to `Err(err)`.",
+                parameter_names: vec![me(), "err".into()],
+                signature: Signature {
+                    types: vec![t.clone(), e.clone()],
+                    parameter_types: vec![Type::option(&t), e.clone()],
+                    return_type: Type::result(&t, &e),
+                },
+                intrinsic: Intrinsic::OkOr,
+            },
+        ],
+        "Result" => vec![
+            IntrinsicMethodDef {
+                name: "is_ok",
+                doc: "Returns `true` if the result is `Ok`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![t.clone(), e.clone()],
+                    parameter_types: vec![Type::result(&t, &e)],
+                    return_type: Type::bool(),
+                },
+                intrinsic: Intrinsic::IsSuccess,
+            },
+            IntrinsicMethodDef {
+                name: "is_err",
+                doc: "Returns `true` if the result is `Err`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![t.clone(), e.clone()],
+                    parameter_types: vec![Type::result(&t, &e)],
+                    return_type: Type::bool(),
+                },
+                intrinsic: Intrinsic::IsFailure,
+            },
+            IntrinsicMethodDef {
+                name: "ok",
+                doc: "Converts the `Result[T, E]` into an `Option[T]`, \
+                discarding the error if any.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![t.clone(), e.clone()],
+                    parameter_types: vec![Type::result(&t, &e)],
+                    return_type: Type::option(&t),
+                },
+                intrinsic: Intrinsic::SuccessToOption,
+            },
+            IntrinsicMethodDef {
+                name: "err",
+                doc: "Converts the `Result[T, E]` into an `Option[E]`, \
+                discarding the success value if any.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![t.clone(), e.clone()],
+                    parameter_types: vec![Type::result(&t, &e)],
+                    return_type: Type::option(&e),
+                },
+                intrinsic: Intrinsic::FailureToOption,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or",
+                doc: "Returns the contained `Ok` value, or `default` if \
+                the result is `Err`.",
+                parameter_names: vec![me(), "default".into()],
+                signature: Signature {
+                    types: vec![t.clone(), e.clone()],
+                    parameter_types: vec![Type::result(&t, &e), t.clone()],
+                    return_type: t.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOr,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or_default",
+                doc: "The no-argument counterpart of `unwrap_or`. Only \
+                type-checks when `T` is `()`, exactly like \
+                `Option::unwrap_or_default`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![e.clone()],
+                    parameter_types: vec![Type::result(Type::unit(), &e)],
+                    return_type: Type::unit(),
+                },
+                intrinsic: Intrinsic::UnwrapOrDefault,
+            },
+        ],
+        "Verdict" => vec![
+            IntrinsicMethodDef {
+                name: "is_accept",
+                doc: "Returns `true` if the verdict is `Accept`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![a.clone(), r.clone()],
+                    parameter_types: vec![Type::verdict(&a, &r)],
+                    return_type: Type::bool(),
+                },
+                intrinsic: Intrinsic::IsSuccess,
+            },
+            IntrinsicMethodDef {
+                name: "is_reject",
+                doc: "Returns `true` if the verdict is `Reject`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![a.clone(), r.clone()],
+                    parameter_types: vec![Type::verdict(&a, &r)],
+                    return_type: Type::bool(),
+                },
+                intrinsic: Intrinsic::IsFailure,
+            },
+            IntrinsicMethodDef {
+                name: "accepted",
+                doc: "Converts the `Verdict[A, R]` into an `Option[A]`, \
+                discarding the reject reason if any. The `Verdict` \
+                counterpart of `Result::ok`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![a.clone(), r.clone()],
+                    parameter_types: vec![Type::verdict(&a, &r)],
+                    return_type: Type::option(&a),
+                },
+                intrinsic: Intrinsic::SuccessToOption,
+            },
+            IntrinsicMethodDef {
+                name: "rejected",
+                doc: "Converts the `Verdict[A, R]` into an `Option[R]`, \
+                discarding the accepted value if any. The `Verdict` \
+                counterpart of `Result::err`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![a.clone(), r.clone()],
+                    parameter_types: vec![Type::verdict(&a, &r)],
+                    return_type: Type::option(&r),
+                },
+                intrinsic: Intrinsic::FailureToOption,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or",
+                doc: "Returns the contained `Accept` value, or `default` \
+                if the verdict is `Reject`.",
+                parameter_names: vec![me(), "default".into()],
+                signature: Signature {
+                    types: vec![a.clone(), r.clone()],
+                    parameter_types: vec![Type::verdict(&a, &r), a.clone()],
+                    return_type: a.clone(),
+                },
+                intrinsic: Intrinsic::UnwrapOr,
+            },
+            IntrinsicMethodDef {
+                name: "unwrap_or_default",
+                doc: "The no-argument counterpart of `unwrap_or`. Only \
+                type-checks when `A` is `()`, exactly like \
+                `Option::unwrap_or_default`.",
+                parameter_names: vec![me()],
+                signature: Signature {
+                    types: vec![r.clone()],
+                    parameter_types: vec![Type::verdict(Type::unit(), &r)],
+                    return_type: Type::unit(),
+                },
+                intrinsic: Intrinsic::UnwrapOrDefault,
+            },
+        ],
+        _ => vec![],
+    };
+
+    match type_ident.as_str() {
+        "Option" => methods.extend(early_returns(
+            Type::option(&t),
+            t.clone(),
+            vec![t.clone()],
+        )),
+        "Result" => methods.extend(early_returns(
+            Type::result(&t, &e),
+            t.clone(),
+            vec![t.clone(), e.clone()],
+        )),
+        "Verdict" => methods.extend(early_returns(
+            Type::verdict(&a, &r),
+            a.clone(),
+            vec![a.clone(), r.clone()],
+        )),
+        _ => {}
+    }
+
+    methods
 }

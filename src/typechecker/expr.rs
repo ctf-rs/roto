@@ -19,8 +19,8 @@ use super::{
         Declaration, ResolvedName, ScopeRef, ScopeType, TypeOrStub, ValueKind,
     },
     types::{
-        EnumVariant, Function, FunctionDefinition, Signature, Type,
-        TypeDefinition, TypeName,
+        EarlyReturn, EnumVariant, Function, FunctionDefinition, Signature,
+        Type, TypeDefinition, TypeName,
     },
 };
 
@@ -552,24 +552,69 @@ impl TypeChecker {
                 Ok(diverges)
             }
             QuestionMark(expr) => {
-                let opt_ty = Type::option(ctx.expected_type.clone());
-                let diverges =
-                    self.expr(scope, &ctx.with_type(opt_ty), expr)?;
+                const ERR_MSG: &str = "can only use `?` in a function returning an Option, Result or Verdict value";
+
                 let Some(ret_ty) = &ctx.function_return_type else {
-                    return Err(self.error_simple("can only use `?` in function returning an optional value", "cannot use `?` here", id));
+                    return Err(self.error_simple(
+                        ERR_MSG,
+                        "cannot use `?` here",
+                        id,
+                    ));
                 };
-                let Type::Name(type_name) = self.type_info.resolve(ret_ty)
+                let Type::Name(ret_type_name) =
+                    self.type_info.resolve(ret_ty)
                 else {
-                    return Err(self.error_simple("can only use `?` in function returning an optional value", "cannot use `?` here", id));
+                    return Err(self.error_simple(
+                        ERR_MSG,
+                        "cannot use `?` here",
+                        id,
+                    ));
                 };
-                if (type_name.name
-                    != ResolvedName {
-                        scope: ScopeRef::GLOBAL,
-                        ident: "Option".into(),
-                    })
-                {
-                    return Err(self.error_simple("can only use `?` in function returning an optional value", "cannot use `?` here", id));
-                }
+
+                let option_name = ResolvedName {
+                    scope: ScopeRef::GLOBAL,
+                    ident: "Option".into(),
+                };
+                let result_name = ResolvedName {
+                    scope: ScopeRef::GLOBAL,
+                    ident: "Result".into(),
+                };
+                let verdict_name = ResolvedName {
+                    scope: ScopeRef::GLOBAL,
+                    ident: "Verdict".into(),
+                };
+
+                // The `?` operator requires the examined expression to be
+                // the *same kind* (Option/Result/Verdict) as the function's
+                // return type, and, for Result/Verdict, to carry the exact
+                // same second type parameter (E/R), since there is no
+                // `From`-style conversion in Roto.
+                let examinee_ty = if ret_type_name.name == option_name {
+                    Type::option(ctx.expected_type.clone())
+                } else if ret_type_name.name == result_name {
+                    let err_ty = ret_type_name
+                        .arguments
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(|| self.fresh_var());
+                    Type::result(ctx.expected_type.clone(), err_ty)
+                } else if ret_type_name.name == verdict_name {
+                    let reject_ty = ret_type_name
+                        .arguments
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(|| self.fresh_var());
+                    Type::verdict(ctx.expected_type.clone(), reject_ty)
+                } else {
+                    return Err(self.error_simple(
+                        ERR_MSG,
+                        "cannot use `?` here",
+                        id,
+                    ));
+                };
+
+                let diverges =
+                    self.expr(scope, &ctx.with_type(examinee_ty), expr)?;
                 Ok(diverges)
             }
             FString(parts) => {
@@ -1501,6 +1546,17 @@ impl TypeChecker {
                 &signature.parameter_types
             };
 
+        // The `unwrap_or_reject`/`unwrap_or_accept` family bails out of
+        // the *enclosing* function, so - like the `?` operator - it needs
+        // that function to return a `Verdict`, and the value it carries
+        // belongs to the enclosing function's accept/reject type rather
+        // than to anything derived from the receiver.
+        if let FunctionDefinition::Intrinsic(intrinsic) = definition
+            && let Some(early) = intrinsic.early_return()
+        {
+            self.check_early_return(ctx, id, last_ident, early, signature)?;
+        }
+
         let diverges = self.check_arguments(
             scope,
             ctx,
@@ -1512,6 +1568,45 @@ impl TypeChecker {
 
         self.unify(&ctx.expected_type, &signature.return_type, id, None)?;
         Ok(diverges)
+    }
+
+    /// Extra type checking for the `unwrap_or_reject`/`unwrap_or_accept`
+    /// family, which early-returns a `Verdict` from the enclosing
+    /// function.
+    fn check_early_return(
+        &mut self,
+        ctx: &Context,
+        id: MetaId,
+        ident: &Meta<Identifier>,
+        early: EarlyReturn,
+        signature: &Signature,
+    ) -> TypeResult<()> {
+        let Some(ret_ty) = ctx.function_return_type.clone() else {
+            return Err(self.error_simple(
+                format!(
+                    "can only use `{}` in a function that returns a Verdict",
+                    **ident
+                ),
+                "cannot bail out here",
+                id,
+            ));
+        };
+
+        // The value carried by the early return: the method's own
+        // argument, or `()` for the `_default` variants.
+        let carried = if early.takes_argument() {
+            signature.parameter_types[1].clone()
+        } else {
+            Type::unit()
+        };
+
+        let verdict = if early.is_accept() {
+            Type::verdict(&carried, self.fresh_var())
+        } else {
+            Type::verdict(self.fresh_var(), &carried)
+        };
+        self.unify(&ret_ty, &verdict, id, None)?;
+        Ok(())
     }
 
     fn method_call(
@@ -1530,6 +1625,22 @@ impl TypeChecker {
         // This might seem silly but we are unifying the receiver type with the
         // _instantiated_ type of the method.
         self.unify(&function.signature.parameter_types[0], &ty, id, None)?;
+
+        // Same extra check as in `path_function_call`: this path is taken
+        // when the receiver is a general expression (`f(x).method()`),
+        // while a plain variable receiver (`x.method()`) parses as a
+        // multi-segment path and goes through that function instead.
+        if let FunctionDefinition::Intrinsic(intrinsic) = function.definition
+            && let Some(early) = intrinsic.early_return()
+        {
+            self.check_early_return(
+                ctx,
+                id,
+                field,
+                early,
+                &function.signature,
+            )?;
+        }
 
         let params = &function.signature.parameter_types[1..];
         let diverges =

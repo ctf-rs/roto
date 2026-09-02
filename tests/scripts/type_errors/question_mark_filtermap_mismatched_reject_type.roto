@@ -1,0 +1,13 @@
+fn positive(x: i32) -> Verdict[i32, String] {
+    if x > 0 {
+        Verdict.Accept(x)
+    } else {
+        Verdict.Reject("not positive")
+    }
+}
+
+filtermap main(x: i32) {
+    let y = positive(x)?;
+    reject 42;
+    accept y * 2
+}

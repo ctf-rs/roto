@@ -1,0 +1,12 @@
+---
+source: tests/snapshot.rs
+expression: string
+input_file: tests/scripts/type_errors/question_mark_mismatched_error_type.roto
+---
+Error: Type error: mismatched types
+    ╭─[ tests/scripts/type_errors/question_mark_mismatched_error_type.roto:10:13 ]
+    │
+ 10 │     let y = half(x)?;
+    │             ───┬───  
+    │                ╰───── expected `Result[u32, String]`, found `Result[u32, i32]`
+────╯

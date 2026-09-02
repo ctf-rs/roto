@@ -1,0 +1,12 @@
+---
+source: tests/snapshot.rs
+expression: string
+input_file: tests/scripts/type_errors/unwrap_or_reject_outside_verdict_fn.roto
+---
+Error: Type error: mismatched types
+   ╭─[ tests/scripts/type_errors/unwrap_or_reject_outside_verdict_fn.roto:2:5 ]
+   │
+ 2 │     x.unwrap_or_reject("cannot bail out of a non-Verdict function")
+   │     ───────────────────────────────┬───────────────────────────────  
+   │                                    ╰───────────────────────────────── expected `u32`, found `Verdict[@2, @1]`
+───╯

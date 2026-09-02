@@ -1,0 +1,12 @@
+---
+source: tests/snapshot.rs
+expression: string
+input_file: tests/scripts/type_errors/question_mark_wrong_kind.roto
+---
+Error: Type error: mismatched types
+    ╭─[ tests/scripts/type_errors/question_mark_wrong_kind.roto:10:13 ]
+    │
+ 10 │     let y = maybe(x)?;
+    │             ────┬───  
+    │                 ╰───── expected `Result[@9, String]`, found `Option[u32]`
+────╯

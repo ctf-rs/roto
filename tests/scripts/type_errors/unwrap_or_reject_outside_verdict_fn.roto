@@ -1,0 +1,3 @@
+fn foo(x: u32?) -> u32 {
+    x.unwrap_or_reject("cannot bail out of a non-Verdict function")
+}

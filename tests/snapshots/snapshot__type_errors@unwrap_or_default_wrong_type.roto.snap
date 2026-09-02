@@ -1,0 +1,12 @@
+---
+source: tests/snapshot.rs
+expression: string
+input_file: tests/scripts/type_errors/unwrap_or_default_wrong_type.roto
+---
+Error: Type error: mismatched types
+   ╭─[ tests/scripts/type_errors/unwrap_or_default_wrong_type.roto:1:1 ]
+   │
+ 1 │ fn foo(x: u32?) -> u32 {
+   │ ┬  
+   │ ╰── expected `Option[u32]`, found `Option[()]`
+───╯

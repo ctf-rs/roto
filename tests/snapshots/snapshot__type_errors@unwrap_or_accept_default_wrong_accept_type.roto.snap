@@ -1,0 +1,12 @@
+---
+source: tests/snapshot.rs
+expression: string
+input_file: tests/scripts/type_errors/unwrap_or_accept_default_wrong_accept_type.roto
+---
+Error: Type error: mismatched types
+   ╭─[ tests/scripts/type_errors/unwrap_or_accept_default_wrong_accept_type.roto:3:12 ]
+   │
+ 3 │     accept y
+   │            ┬  
+   │            ╰── expected `()`, found `i32`
+───╯

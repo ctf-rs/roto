@@ -398,6 +398,12 @@ match x {
 }
 ```
 
+The `?` operator is not limited to optionals: it works on `Result` and
+`Verdict` too. See [](#lang_short_circuiting).
+
+`Option[T]` also has a number of methods, such as `is_some`, `unwrap_or`
+and `ok_or`; see {roto:ref}`Option[T]`.
+
 (lang_result)=
 ### Results
 
@@ -405,11 +411,64 @@ The `Result[T, E]` type is used for functions that might fail. It is an enum
 with two variants: `Ok(T)` and `Err(E)`. The `Ok` variant should be returned
 when the function exits successfully and the `Err` variant when it has failed.
 
-The caller can then match on this value and decide what to do.
+The caller can then match on this value, use one of its methods (`is_ok`,
+`ok`, `err`, `unwrap_or`, ...), or propagate the error with the `?`
+operator described below.
 
-:::{note}
-More syntactic sugar for dealing with `Result` will be added in the future.
-:::
+(lang_short_circuiting)=
+### Short-circuiting
+
+`Option[T]`, `Result[T, E]` and `Verdict[A, R]` are all enums with the
+same shape: one variant carrying a success value (`Some`, `Ok`,
+`Accept`) and one representing failure (`None`, `Err`, `Reject`). All
+three therefore support the same short-circuiting operations.
+
+The `?` operator unwraps the success variant, or returns the failure
+variant from the enclosing function. It requires the enclosing function
+to return the *same kind* of value, carrying the same failure type,
+because there is no implicit conversion between them:
+
+{class="test-ignore"}
+```roto
+fn halve(x: u32) -> Result[u32, String] {
+    if x % 2 == 0 { Ok(x / 2) } else { Err("odd number") }
+}
+
+fn quarter(x: u32) -> Result[u32, String] {
+    // Returns Err("odd number") from `quarter` if `halve` fails.
+    let half = halve(x)?;
+    Ok(halve(half)?)
+}
+```
+
+Inside a `filtermap`, whose return type is a `Verdict`, `?` propagates a
+`Reject` in exactly the same way.
+
+When the types don't line up, or when you want to choose the verdict
+explicitly, use the `unwrap_or_reject`/`unwrap_or_accept` family. These
+also unwrap the success value, but bail out of the enclosing function
+with a `Verdict` that you supply, so the failure type of the value being
+unwrapped doesn't have to match anything:
+
+{class="test-ignore"}
+```roto
+filtermap main(x: u32) {
+    // Stop and reject, whatever `halve`'s own error type is.
+    let half = halve(x).unwrap_or_reject("could not halve");
+
+    // Or stop and *accept*, e.g. to fail open when a parse fails.
+    let ttl = parse_ttl(x).unwrap_or_accept(0);
+
+    accept half + ttl
+}
+```
+
+`unwrap_or_accept` cannot be expressed with `?` at all, since `?` only
+ever early-returns the failure variant.
+
+Each of these has a `_default` form taking no argument, which bails out
+with `Reject(())` or `Accept(())`, i.e. the equivalent of a bare
+`reject` or `accept`.
 
 ## Custom Types
 

@@ -148,7 +148,7 @@
         "lang": "roto",
         "code": "let foo = { bar: 5, baz: 10 };\n",
         "source": "source/reference/language_reference.md",
-        "line": 422,
+        "line": 481,
         "testoutput": "",
         "mode": "check"
     },
@@ -157,7 +157,7 @@
         "lang": "roto",
         "code": "if x {\n    { foo: 5, bar: 10 }\n} else {\n    { foo: 5 }  // error!\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 431,
+        "line": 490,
         "testoutput": "",
         "mode": "error"
     },
@@ -166,7 +166,7 @@
         "lang": "roto",
         "code": "filtermap example_filter_map() {\n    let x = { foo: 5 };\n    accept x.foo\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 445,
+        "line": 504,
         "testoutput": "",
         "mode": "check"
     },
@@ -175,7 +175,7 @@
         "lang": "roto",
         "code": "let x = { foo: 5 };\nx.foo = 6;\n",
         "source": "source/reference/language_reference.md",
-        "line": 454,
+        "line": 513,
         "testoutput": "",
         "mode": "check"
     },
@@ -184,7 +184,7 @@
         "lang": "roto",
         "code": "// A `Number` enum type that has the constructors `Int`, `Float` and `Nan`.\nenum Number {\n    Int(i32),\n    Float(f32),\n    Nan,\n}\n\nfn use_number() {\n    let x = Number.Int(10);\n    let y = Number.Float(21.5);\n    let z = Number.Nan;\n\n    match x {\n        Int(i) => print(f\"int: {i}\"),\n        Float(f) => print(f\"float: {f}\"),\n        Nan => print(f\"nan!\"),\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 497,
+        "line": 556,
         "testoutput": "",
         "mode": "check"
     },
@@ -193,7 +193,7 @@
         "lang": "roto",
         "code": "enum Either[L, R] {\n    Left(L),\n    Right(R),\n}\n\nfn to_string(x: Either[i32, String]) -> String {\n    match x {\n        Left(i) => f\"{i}\",\n        Right(s) => s,\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 520,
+        "line": 579,
         "testoutput": "",
         "mode": "check"
     },
@@ -202,7 +202,7 @@
         "lang": "roto",
         "code": "1 + 2 * 3;    // evaluates to 7\n",
         "source": "source/reference/language_reference.md",
-        "line": 569,
+        "line": 628,
         "testoutput": "",
         "mode": "check"
     },
@@ -211,7 +211,7 @@
         "lang": "roto",
         "code": "1 + (2 * 3);  // evaluates to 7\n",
         "source": "source/reference/language_reference.md",
-        "line": 575,
+        "line": 634,
         "testoutput": "",
         "mode": "check"
     },
@@ -220,7 +220,7 @@
         "lang": "roto",
         "code": "(1 + 2) * 3;  // evaluates to 9\n",
         "source": "source/reference/language_reference.md",
-        "line": 581,
+        "line": 640,
         "testoutput": "",
         "mode": "check"
     },
@@ -229,7 +229,7 @@
         "lang": "roto",
         "code": "let x = Some(10);\nmatch x {\n    None => print(\"x is None\"),\n    Some(i) => {\n        print(\"x is Some\");\n        print(f\"x is {i}\");\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 711,
+        "line": 770,
         "testoutput": "",
         "mode": "check"
     },
@@ -238,7 +238,7 @@
         "lang": "roto",
         "code": "let i = 0;\nwhile i < 10 {\n    i = i + 1;\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 735,
+        "line": 794,
         "testoutput": "",
         "mode": "check"
     },
@@ -247,7 +247,7 @@
         "lang": "roto",
         "code": "let total = 0;\nfor x in [1, 2, 3, 4] {\n    total = total + x;\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 752,
+        "line": 811,
         "testoutput": "",
         "mode": "check"
     },
@@ -256,7 +256,7 @@
         "lang": "roto",
         "code": "fn add_one(x: u64) -> u64 {\n    x + 1\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 772,
+        "line": 831,
         "testoutput": "",
         "mode": "check"
     },
@@ -265,7 +265,7 @@
         "lang": "roto",
         "code": "fn add_one(x: u64) -> u64 {\n    return x + 1;\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 790,
+        "line": 849,
         "testoutput": "",
         "mode": "check"
     },
@@ -274,7 +274,7 @@
         "lang": "roto",
         "code": "fn subtract_one(x: u64) -> u64 {\n    if x == 0 {\n        return 0;\n    }\n    x - 1\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 799,
+        "line": 858,
         "testoutput": "",
         "mode": "check"
     },
@@ -283,7 +283,7 @@
         "lang": "roto",
         "code": "filtermap reject_zeros(input: IpAddr) {\n    let zeros = 0.0.0.0;\n    if input == zeros {\n        reject\n    } else {\n        accept\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 848,
+        "line": 907,
         "testoutput": "",
         "mode": "check"
     },
@@ -292,7 +292,7 @@
         "lang": "roto",
         "code": "filtermap small_enough(x: i32) {\n    if x < 10 {\n        accept x\n    } else {\n        reject \"value was too big!\"\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 861,
+        "line": 920,
         "testoutput": "",
         "mode": "check"
     },
@@ -301,7 +301,7 @@
         "lang": "roto",
         "code": "fn small_enough(x: i32) -> Verdict[i32, String] {\n    if x < 10 {\n        return Verdict.Accept(x)\n    } else {\n        return Verdict.Reject(\"value was too big!\")\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 873,
+        "line": 932,
         "testoutput": "",
         "mode": "check"
     },
@@ -310,7 +310,7 @@
         "lang": "roto",
         "code": "fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n\ntest test_add_function {\n    if add(10, 20) == 30 {\n        accept\n    } else {\n        reject\n    }\n}\n",
         "source": "source/reference/language_reference.md",
-        "line": 899,
+        "line": 958,
         "testoutput": "",
         "mode": "check"
     },
@@ -319,7 +319,7 @@
         "lang": "roto",
         "code": "const FOO: u32 = 10;\n",
         "source": "source/reference/language_reference.md",
-        "line": 925,
+        "line": 984,
         "testoutput": "",
         "mode": "check"
     },
@@ -328,7 +328,7 @@
         "lang": "roto",
         "code": "const FOO: u32 = BAR;\nconst BAR: u32 = FOO;\n",
         "source": "source/reference/language_reference.md",
-        "line": 946,
+        "line": 1005,
         "testoutput": "",
         "mode": "error"
     },

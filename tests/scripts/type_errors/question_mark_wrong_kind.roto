@@ -1,0 +1,12 @@
+fn maybe(x: u32) -> u32? {
+    if x % 2 == 0 {
+        Option.Some(x / 2)
+    } else {
+        Option.None
+    }
+}
+
+fn foo(x: u32) -> Result[u32, String] {
+    let y = maybe(x)?;
+    Ok(y + 1)
+}

@@ -117,7 +117,7 @@ use types::{
 
 use self::{
     error::TypeError,
-    types::{Signature, default_types},
+    types::{Signature, default_types, intrinsic_methods},
 };
 
 pub(crate) mod error;
@@ -257,7 +257,7 @@ impl TypeChecker {
                 .insert_type(ScopeRef::GLOBAL, &ident, doc, ty.clone())
                 .map_err(|id| self.error_declared_twice(&ident, id))?;
 
-            if let TypeDefinition::Enum(_, variants) = &ty {
+            if let TypeDefinition::Enum(type_name, variants) = &ty {
                 let dec = self.type_info.scope_graph.get_declaration(name);
                 let DeclarationKind::Type(TypeOrStub::Type(type_def)) =
                     dec.kind
@@ -282,6 +282,32 @@ impl TypeChecker {
                             |_| false,
                         )
                         .unwrap();
+                }
+
+                for method in intrinsic_methods(type_name.name.ident) {
+                    self.type_info
+                        .scope_graph
+                        .insert_method(
+                            scope,
+                            &Meta {
+                                node: Identifier::from(method.name),
+                                id: MetaId(0),
+                            },
+                            FunctionDefinition::Intrinsic(method.intrinsic),
+                            method.parameter_names,
+                            method.doc.into(),
+                            method.signature,
+                        )
+                        .map_err(|_| {
+                            self.error_simple(
+                                format!(
+                                    "Item `{}` already exists in this scope",
+                                    method.name
+                                ),
+                                "duplicate intrinsic method",
+                                MetaId(0),
+                            )
+                        })?;
                 }
             }
 

@@ -1,0 +1,8 @@
+filtermap main(x: i32) {
+    let y = maybe(x).unwrap_or_accept_default();
+    accept y
+}
+
+fn maybe(x: i32) -> i32? {
+    if x > 0 { Some(x) } else { None }
+}

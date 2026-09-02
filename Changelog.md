@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased (ctf-rs fork)
+
+### Language
+
+#### Added
+
+- The `?` operator now works on `Result[T, E]` and `Verdict[A, R]`, not
+  just `Option[T]`. It requires the examined expression to be the same
+  kind (Option/Result/Verdict) as the enclosing function's return type,
+  with an exact match on the secondary type parameter (`E`/`R`) since
+  there is no `From`-style conversion. This works the same way inside a
+  `filtermap`, whose return type is implicitly `Verdict[A, R]`.
+
+```roto
+fn parse(x: u32) -> Result[u32, String] {
+    if x % 2 == 0 { Ok(x / 2) } else { Err("odd number") }
+}
+
+filtermap main(x: u32) {
+    let y = parse(x)?;
+    accept y
+}
+```
+
+- New builtin methods, mirroring Rust's `Option`/`Result` API wherever an
+  equivalent exists. Roto has no closures, tuples or panics, so the
+  closure-taking (`map`, `and_then`, `*_else`, ...) and panicking
+  (`unwrap`, `expect`) parts of Rust's API are deliberately absent.
+  - `Option[T]`: `is_some()`, `is_none()`, `unwrap_or(default)`,
+    `unwrap_or_default()`, `ok_or(err)`
+  - `Result[T, E]`: `is_ok()`, `is_err()`, `ok()`, `err()`,
+    `unwrap_or(default)`, `unwrap_or_default()`
+  - `Verdict[A, R]` (which previously had no methods at all):
+    `is_accept()`, `is_reject()`, `accepted()`, `rejected()`,
+    `unwrap_or(default)`, `unwrap_or_default()`
+- The `unwrap_or_reject`/`unwrap_or_accept` family, available on all
+  three types, which yields the contained success value or **bails out of
+  the enclosing function** with a `Verdict` - like `?`, but choosing the
+  verdict explicitly:
+  - `unwrap_or_reject(reason)` / `unwrap_or_reject_default()` fail closed
+  - `unwrap_or_accept(value)` / `unwrap_or_accept_default()` fail open.
+    This cannot be expressed with `?` at all, since `?` only ever
+    early-returns the *failure* variant.
+
+  The value carried belongs to the *enclosing* function's verdict, so it
+  need not be related to the receiver's own types - which also means
+  these can remap a reject reason where a bare `?` could not:
+
+```roto
+filtermap main(x: i32) {
+    // Bail out with Reject("bad length") if the read fails.
+    let len = parse_len(x).unwrap_or_reject("bad length");
+    // Or let it through with a default instead of rejecting.
+    let ttl = parse_ttl(x).unwrap_or_accept(0);
+    accept len + ttl
+}
+```
+
+- All of these can be called either as methods (`x.unwrap_or(d)`) or
+  through the equivalent function-call syntax (`Option.unwrap_or(x, d)`,
+  including via `import Option.unwrap_or`), like any other method.
+- `unwrap_or_default()` and the `_default` bail-outs
+  take no argument. Roto has no generic `Default` trait, so the omitted
+  value is always `()`; the `_default` forms that omit a value of the
+  success type therefore only type-check when that type is `()`, exactly
+  like a bare `accept`/`reject` (with no expression) always producing
+  `()`.
+
 ## 0.12.0
 
 Released 2026-08-14.

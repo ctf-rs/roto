@@ -21,7 +21,9 @@ use crate::{
         self, PathValue, ResolvedPath,
         info::TypeInfo,
         scope::{DeclarationKind, ResolvedName, ScopeRef, ValueKind},
-        types::{FunctionDefinition, Signature, Type},
+        types::{
+            EarlyReturn, FunctionDefinition, Intrinsic, Signature, Type,
+        },
     },
     value::ErasedList,
 };
@@ -530,12 +532,46 @@ impl<'r> Lowerer<'r> {
         let examinee_ty = self.type_info.convert(&examinee_ty);
         let examinee = self.assign_to_var(examinee, examinee_ty);
 
+        // `?` works on Option, Result and Verdict alike: all three are
+        // structurally the same 2-variant enum, with variant 0 being the
+        // success case (exactly one field: Some/Ok/Accept) and variant 1
+        // being the failure case (zero or one field: None/Err/Reject).
+        // Look up the examinee's actual variant names/fields here instead
+        // of hardcoding "Some"/"None", so the same lowering works for all
+        // three types.
+        let Ty::Enum(variants) = self.type_info.ty_pool.get(examinee_ty)
+        else {
+            ice!("`?` examinee is not an enum");
+        };
+        let (success_name, _) = variants[0];
+        let (failure_name, failure_fields) = variants[1].clone();
+        let failure_field_ty = failure_fields.first().copied();
+
         let discriminant = self.undropped_tmp();
         self.emit_assign(
             Place::new(discriminant.clone(), TyRef::U8),
             TyRef::U8,
             Value::Discriminant(examinee.clone()),
         );
+
+        // If the failure variant carries a field (Err/Reject), extract it
+        // from the examinee before branching away: once we jump to the
+        // early-return block we can no longer meaningfully project into
+        // the examinee's own variant.
+        let failure_arg = failure_field_ty.map(|field_ty| {
+            (
+                Value::Clone(Place {
+                    var: examinee.clone(),
+                    root_ty: examinee_ty,
+                    projection: vec![Projection::VariantField(
+                        failure_name,
+                        0,
+                    )],
+                }),
+                field_ty,
+            )
+        });
+
         self.emit_switch(
             discriminant,
             vec![(0, continue_lbl)],
@@ -544,7 +580,8 @@ impl<'r> Lowerer<'r> {
 
         self.new_block(lbl_return_none);
         let ty = self.return_type;
-        let val = self.make_enum(ty, "None".into(), &[]);
+        let args: Vec<(Value, TyRef)> = failure_arg.into_iter().collect();
+        let val = self.make_enum(ty, failure_name, &args);
         let _ = self.return_value(val);
 
         self.new_block(continue_lbl);
@@ -553,8 +590,438 @@ impl<'r> Lowerer<'r> {
         Value::Clone(Place {
             var: examinee,
             root_ty: ty,
-            projection: vec![Projection::VariantField("Some".into(), 0)],
+            projection: vec![Projection::VariantField(success_name, 0)],
         })
+    }
+
+    /// Looks up the variant names of a 2-variant enum type (Option, Result
+    /// or Verdict): `(success_variant_name, failure_variant_name)`, i.e.
+    /// `(Some, None)`, `(Ok, Err)` or `(Accept, Reject)`.
+    fn enum_variant_names(&self, ty: TyRef) -> (Identifier, Identifier) {
+        let Ty::Enum(variants) = self.type_info.ty_pool.get(ty) else {
+            ice!("expected a 2-variant enum (Option, Result or Verdict)");
+        };
+        (variants[0].0, variants[1].0)
+    }
+
+    /// Emits a two-way branch on the discriminant of `receiver` (an
+    /// Option, Result or Verdict value): runs `on_success` when the
+    /// discriminant is 0 (Some/Ok/Accept), `on_failure` when it is 1
+    /// (None/Err/Reject), and joins the two branches' values (each of type
+    /// `result_ty`) back into one.
+    fn branch_on_discriminant(
+        &mut self,
+        receiver: Var,
+        result_ty: TyRef,
+        on_success: impl FnOnce(&mut Self) -> Value,
+        on_failure: impl FnOnce(&mut Self) -> Value,
+    ) -> Value {
+        let current_label = self.current_label();
+        let lbl_cont = self.label_store.next(current_label);
+        let lbl_success = self.label_store.wrap_internal(
+            current_label,
+            Identifier::from("intrinsic-success"),
+        );
+        let lbl_failure = self.label_store.wrap_internal(
+            current_label,
+            Identifier::from("intrinsic-failure"),
+        );
+
+        let discriminant = self.undropped_tmp();
+        self.emit_assign(
+            Place::new(discriminant.clone(), TyRef::U8),
+            TyRef::U8,
+            Value::Discriminant(receiver),
+        );
+        self.emit_switch(
+            discriminant,
+            vec![(0, lbl_success)],
+            Some(lbl_failure),
+        );
+
+        self.new_block(lbl_success);
+        let op = on_success(self);
+        let res = self.undropped_tmp();
+        // Use `do_assign`, not a plain `emit_assign`, so that a
+        // `Value::Move` result (e.g. from `make_enum`) correctly removes
+        // its source variable from live-variable tracking. Otherwise that
+        // variable would still look "live" at scope-exit and get dropped
+        // a second time there, even though its bytes were already copied
+        // into `res` here (a double-drop/use-after-free for any type with
+        // drop glue, e.g. RotoString).
+        self.do_assign(Place::new(res.clone(), result_ty), result_ty, op);
+        self.emit_jump(lbl_cont);
+
+        self.new_block(lbl_failure);
+        let op = on_failure(self);
+        self.do_assign(Place::new(res.clone(), result_ty), result_ty, op);
+        self.emit_jump(lbl_cont);
+
+        self.new_block(lbl_cont);
+        self.add_live_variable(res.clone(), result_ty);
+        Value::Move(res)
+    }
+
+    /// Converts a 2-variant enum value (`receiver`, an Option or Result)
+    /// into another structurally-identical one (`target_ty`): the success
+    /// variant's field is always carried over 1:1 (e.g. `Some(v)`/`Ok(v)`
+    /// -> `Ok(v)`/`Accept(v)`). The failure variant is either constructed
+    /// from `failure_override` (used for `ok_or`/`ok_or_reject`, where the
+    /// caller supplies the new error/reject value, since `None` carries no
+    /// value of its own to reuse) or with no field at all (used for
+    /// `Result::ok`, which discards the error).
+    fn intrinsic_convert(
+        &mut self,
+        receiver: Var,
+        receiver_ty: TyRef,
+        target_ty: TyRef,
+        failure_override: Option<(Var, TyRef)>,
+    ) -> Value {
+        let (success_name, _) = self.enum_variant_names(receiver_ty);
+        let (target_success_name, target_failure_name) =
+            self.enum_variant_names(target_ty);
+
+        let recv_for_success = receiver.clone();
+        // The override (if any) is only ever consumed on the failure
+        // path (below). Clone the handle so the success path can drop it
+        // explicitly instead: `branch_on_discriminant` unconditionally
+        // lowers *both* branches into the function body, so if we don't
+        // balance this here, the success path would silently leave this
+        // value undropped whenever it's actually taken at runtime, while
+        // our own liveness bookkeeping (which only sees the failure
+        // path's `Value::Move`) would incorrectly believe it was already
+        // handled everywhere.
+        let override_for_success = failure_override.clone();
+        self.branch_on_discriminant(
+            receiver,
+            target_ty,
+            move |this| {
+                if let Some((arg, arg_ty)) = override_for_success {
+                    // Emit the actual drop instruction so the success
+                    // path is runtime-correct, but do NOT also remove it
+                    // from the compiler's liveness bookkeeping here: that
+                    // bookkeeping is a single, branch-unaware, compile
+                    // time structure, and the failure branch below
+                    // already removes it exactly once (via its own
+                    // `Value::Move`), regardless of which branch is
+                    // actually taken at runtime.
+                    this.emit_drop(Place::new(arg, arg_ty), arg_ty);
+                }
+
+                let field = Value::Clone(Place {
+                    var: recv_for_success,
+                    root_ty: receiver_ty,
+                    projection: vec![Projection::VariantField(
+                        success_name,
+                        0,
+                    )],
+                });
+                let field_ty = {
+                    let Ty::Enum(variants) =
+                        this.type_info.ty_pool.get(target_ty)
+                    else {
+                        ice!();
+                    };
+                    variants[0].1[0]
+                };
+                this.make_enum(
+                    target_ty,
+                    target_success_name,
+                    &[(field, field_ty)],
+                )
+            },
+            move |this| match failure_override {
+                Some((arg, _)) => {
+                    let field_ty = {
+                        let Ty::Enum(variants) =
+                            this.type_info.ty_pool.get(target_ty)
+                        else {
+                            ice!();
+                        };
+                        variants[1].1[0]
+                    };
+                    this.make_enum(
+                        target_ty,
+                        target_failure_name,
+                        &[(Value::Move(arg), field_ty)],
+                    )
+                }
+                None => this.make_enum(target_ty, target_failure_name, &[]),
+            },
+        )
+    }
+
+    /// Converts an Option or Result (`receiver`) into a Verdict
+    /// (`target_ty`), always constructing the Accept variant: on
+    /// Some/Ok, carrying over the receiver's own field; on None/Err,
+    /// using `default` instead and discarding whatever the receiver's
+    /// failure variant held (if anything). This is a "fail open"
+    /// conversion for `ok_or_accept`, for firewalls that would rather
+    /// accept-with-a-default than reject when a value couldn't be
+    /// parsed/found.
+    /// Builds an `Option` (`target_ty`) out of one variant of a 2-variant
+    /// enum receiver: `Result::ok`/`Verdict::accepted` take the success
+    /// variant's field (`from_success`), `Result::err`/`Verdict::rejected`
+    /// take the failure variant's. The other variant becomes `None`.
+    fn intrinsic_to_option(
+        &mut self,
+        receiver: Var,
+        receiver_ty: TyRef,
+        target_ty: TyRef,
+        from_success: bool,
+    ) -> Value {
+        let (success_name, failure_name) =
+            self.enum_variant_names(receiver_ty);
+        let (some_name, none_name) = self.enum_variant_names(target_ty);
+        let wanted = if from_success {
+            success_name
+        } else {
+            failure_name
+        };
+
+        let some_field_ty = {
+            let Ty::Enum(variants) = self.type_info.ty_pool.get(target_ty)
+            else {
+                ice!();
+            };
+            variants[0].1[0]
+        };
+
+        let recv_for_some = receiver.clone();
+        let build_some = move |this: &mut Self| {
+            let field = Value::Clone(Place {
+                var: recv_for_some,
+                root_ty: receiver_ty,
+                projection: vec![Projection::VariantField(wanted, 0)],
+            });
+            this.make_enum(target_ty, some_name, &[(field, some_field_ty)])
+        };
+        let build_none =
+            move |this: &mut Self| this.make_enum(target_ty, none_name, &[]);
+
+        // `branch_on_discriminant` always runs the success closure on the
+        // discriminant-0 path, so swap the two for the `err`/`rejected`
+        // direction rather than duplicating the branching logic.
+        if from_success {
+            self.branch_on_discriminant(
+                receiver, target_ty, build_some, build_none,
+            )
+        } else {
+            self.branch_on_discriminant(
+                receiver, target_ty, build_none, build_some,
+            )
+        }
+    }
+
+    /// Lowers the `unwrap_or_reject`/`unwrap_or_accept` family: yields the
+    /// receiver's success value, or bails out of the *enclosing* function
+    /// with a `Verdict`, in the same way the `?` operator does.
+    fn intrinsic_early_return(
+        &mut self,
+        receiver: Var,
+        receiver_ty: TyRef,
+        early: EarlyReturn,
+        arg: Option<(Var, TyRef)>,
+    ) -> Value {
+        let current_label = self.current_label();
+        let lbl_early = self.label_store.wrap_internal(
+            current_label,
+            Identifier::from("unwrap-or-verdict"),
+        );
+        let continue_lbl = self.label_store.next(current_label);
+
+        let (success_name, _) = self.enum_variant_names(receiver_ty);
+        let return_ty = self.return_type;
+        let (accept_name, reject_name) = self.enum_variant_names(return_ty);
+        let variant = if early.is_accept() {
+            accept_name
+        } else {
+            reject_name
+        };
+
+        let discriminant = self.undropped_tmp();
+        self.emit_assign(
+            Place::new(discriminant.clone(), TyRef::U8),
+            TyRef::U8,
+            Value::Discriminant(receiver.clone()),
+        );
+        self.emit_switch(
+            discriminant,
+            vec![(0, continue_lbl)],
+            Some(lbl_early),
+        );
+
+        self.new_block(lbl_early);
+        let payload_ty = {
+            let Ty::Enum(variants) = self.type_info.ty_pool.get(return_ty)
+            else {
+                ice!("enclosing function does not return a Verdict");
+            };
+            let idx = if early.is_accept() { 0 } else { 1 };
+            variants[idx].1[0]
+        };
+        let payload = match &arg {
+            Some((var, _)) => Value::Move(var.clone()),
+            None => Value::Const(ast::Literal::Unit, TyRef::UNIT),
+        };
+        let val =
+            self.make_enum(return_ty, variant, &[(payload, payload_ty)]);
+        // `return_value` drops everything still live, including the
+        // receiver (whose failure payload we are discarding here).
+        let _ = self.return_value(val);
+
+        self.new_block(continue_lbl);
+        // On this path the argument is never consumed, so drop it here.
+        // As in `intrinsic_convert`, only the instruction is emitted: the
+        // early-return block above already removed it from the compiler's
+        // branch-unaware liveness bookkeeping exactly once.
+        if let Some((var, ty)) = arg {
+            self.emit_drop(Place::new(var, ty), ty);
+        }
+        Value::Clone(Place {
+            var: receiver,
+            root_ty: receiver_ty,
+            projection: vec![Projection::VariantField(success_name, 0)],
+        })
+    }
+
+    /// Lowers a call to a compiler-builtin method on Option, Result or
+    /// Verdict (see [`FunctionDefinition::Intrinsic`]).
+    fn intrinsic_call(
+        &mut self,
+        intrinsic: Intrinsic,
+        receiver: Option<(Value, Type)>,
+        arguments: &[Meta<ast::Expr>],
+        return_ty: TyRef,
+    ) -> Value {
+        // Evaluate the receiver and the remaining arguments, in source
+        // order, as ordinary expressions so they participate in normal
+        // drop tracking.
+        //
+        // These methods can be reached either as a method call
+        // (`x.unwrap_or(d)`) or through the equivalent function-call
+        // syntax (`Option.unwrap_or(x, d)`, including via `import
+        // Option.unwrap_or`). In the latter case the typechecker
+        // resolves them as a plain function, so there is no separate
+        // receiver and `self` is simply the first ordinary argument.
+        let eval = |this: &mut Self, e: &Meta<ast::Expr>| {
+            let ty = this.type_info.type_of(e);
+            let ty = this.type_info.convert(&ty);
+            let op = this.expr(e);
+            (this.assign_to_var(op, ty), ty)
+        };
+
+        let ((receiver, receiver_ty), rest) = match receiver {
+            Some((val, ty)) => {
+                let ty = self.type_info.convert(&ty);
+                ((self.assign_to_var(val, ty), ty), arguments)
+            }
+            None => {
+                let (this, rest) = arguments
+                    .split_first()
+                    .expect("intrinsic methods always take a `self`");
+                (eval(self, this), rest)
+            }
+        };
+
+        let args: Vec<(Var, TyRef)> =
+            rest.iter().map(|a| eval(self, a)).collect();
+
+        if let Some(early) = intrinsic.early_return() {
+            let arg = if early.takes_argument() {
+                Some(args[0].clone())
+            } else {
+                None
+            };
+            return self.intrinsic_early_return(
+                receiver,
+                receiver_ty,
+                early,
+                arg,
+            );
+        }
+
+        match intrinsic {
+            Intrinsic::IsSuccess => self.branch_on_discriminant(
+                receiver,
+                TyRef::BOOL,
+                |_| Value::Const(ast::Literal::Bool(true), TyRef::BOOL),
+                |_| Value::Const(ast::Literal::Bool(false), TyRef::BOOL),
+            ),
+            Intrinsic::IsFailure => self.branch_on_discriminant(
+                receiver,
+                TyRef::BOOL,
+                |_| Value::Const(ast::Literal::Bool(false), TyRef::BOOL),
+                |_| Value::Const(ast::Literal::Bool(true), TyRef::BOOL),
+            ),
+            Intrinsic::SuccessToOption => self.intrinsic_to_option(
+                receiver,
+                receiver_ty,
+                return_ty,
+                true,
+            ),
+            Intrinsic::FailureToOption => self.intrinsic_to_option(
+                receiver,
+                receiver_ty,
+                return_ty,
+                false,
+            ),
+            Intrinsic::UnwrapOr => {
+                let (success_name, _) = self.enum_variant_names(receiver_ty);
+                let (default_var, result_ty) = args[0].clone();
+                let recv_for_success = receiver.clone();
+                let default_for_success = default_var.clone();
+                self.branch_on_discriminant(
+                    receiver,
+                    result_ty,
+                    move |this| {
+                        // The default is only used on the failure path
+                        // below; drop it explicitly here so it isn't
+                        // silently leaked whenever the receiver is
+                        // actually Some/Ok at runtime (see the doc
+                        // comment on `intrinsic_convert` for why this
+                        // can't just rely on scope-exit cleanup).
+                        this.emit_drop(
+                            Place::new(default_for_success, result_ty),
+                            result_ty,
+                        );
+                        Value::Clone(Place {
+                            var: recv_for_success,
+                            root_ty: receiver_ty,
+                            projection: vec![Projection::VariantField(
+                                success_name,
+                                0,
+                            )],
+                        })
+                    },
+                    move |_| Value::Move(default_var),
+                )
+            }
+            Intrinsic::UnwrapOrDefault => {
+                // The success type is forced to () by the signature, so
+                // the result is always () regardless of which variant the
+                // receiver holds - there's no need to even look at it.
+                // `receiver` is left otherwise untouched: it stays tracked
+                // live and is dropped exactly once by the normal
+                // scope-exit cleanup, correctly handling whichever variant
+                // it actually holds at runtime (e.g. a real
+                // heap-allocated Err/Reject value).
+                let _ = receiver;
+                Value::Const(ast::Literal::Unit, TyRef::UNIT)
+            }
+            Intrinsic::OkOr => self.intrinsic_convert(
+                receiver,
+                receiver_ty,
+                return_ty,
+                Some(args[0].clone()),
+            ),
+            Intrinsic::UnwrapOrReject
+            | Intrinsic::UnwrapOrRejectDefault
+            | Intrinsic::UnwrapOrAccept
+            | Intrinsic::UnwrapOrAcceptDefault => {
+                unreachable!("handled by early_return above")
+            }
+        }
     }
 
     fn literal(&mut self, literal: &Meta<ast::Literal>) -> Value {
@@ -632,6 +1099,22 @@ impl<'r> Lowerer<'r> {
     ) -> Value {
         let name = func.name;
 
+        // Intrinsics (compiler-builtin methods on Option/Result) are not
+        // backed by a real callee, so they get their own lowering that
+        // evaluates the receiver/arguments as ordinary tracked (auto-
+        // dropped) local variables, instead of the "the callee drops
+        // these" convention used for Runtime/Roto calls below.
+        if let FunctionDefinition::Intrinsic(intrinsic) = func.definition {
+            let return_type =
+                self.type_info.convert(&func.signature.return_type);
+            return self.intrinsic_call(
+                intrinsic,
+                receiver,
+                arguments,
+                return_type,
+            );
+        }
+
         let mut args = Vec::new();
         if let Some((receiver, ty)) = receiver {
             let ty = self.type_info.convert(&ty);
@@ -687,6 +1170,9 @@ impl<'r> Lowerer<'r> {
                 args,
                 mir_signature,
             },
+            FunctionDefinition::Intrinsic(_) => {
+                unreachable!("handled above")
+            }
         }
     }
 
