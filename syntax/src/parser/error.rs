@@ -4,7 +4,7 @@ use rustc_literal_escaper::{EscapeError, Mode};
 
 use super::meta::Span;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParseError {
     pub location: Span,
     pub kind: ParseErrorKind,
@@ -12,7 +12,7 @@ pub struct ParseError {
     pub hints: Vec<Hint>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hint {
     pub location: Span,
     pub text: String,
@@ -156,7 +156,7 @@ fn escape_error_to_msg(error: &EscapeError, mode: Mode) -> String {
     .into()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseErrorKind {
     EndOfInput,
     FailedToParseEntireInput,

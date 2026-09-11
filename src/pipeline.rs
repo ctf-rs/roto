@@ -33,7 +33,59 @@ use crate::{
     },
 };
 
-use ariadne::Cache;
+/// Severity of a structured Roto compiler diagnostic.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RotoDiagnosticSeverity {
+    /// An error that prevents successful compilation.
+    Error,
+
+    /// A warning or secondary suggestion.
+    Warning,
+
+    /// Related explanatory information.
+    Info,
+}
+
+/// Alternative name for diagnostic label severity.
+pub type RotoDiagnosticLevel = RotoDiagnosticSeverity;
+
+/// One source label attached to a structured Roto diagnostic.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RotoDiagnosticLabel {
+    /// Index into [`RotoReport::files`].
+    pub file: usize,
+
+    /// Exact byte range within that source file.
+    pub range: std::ops::Range<usize>,
+
+    /// Label severity.
+    pub level: RotoDiagnosticSeverity,
+
+    /// Human-readable label text.
+    pub message: String,
+}
+
+/// A compiler diagnostic independent of its rendered terminal format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RotoDiagnostic {
+    /// Diagnostic severity.
+    pub severity: RotoDiagnosticSeverity,
+
+    /// Human-readable primary message.
+    pub message: String,
+
+    /// Exact primary source span, when this diagnostic is source-related.
+    pub span: Option<Span>,
+
+    /// Primary and related source labels.
+    pub labels: Vec<RotoDiagnosticLabel>,
+
+    /// Additional explanatory notes.
+    pub notes: Vec<String>,
+
+    /// Suggested ways to resolve the diagnostic.
+    pub help: Vec<String>,
+}
 
 #[cfg(feature = "logger")]
 use crate::ir_printer::{IrPrinter, Printable};
@@ -100,6 +152,122 @@ pub struct Package<Ctx: OptCtx> {
 }
 
 impl RotoReport {
+    /// Return structured compiler diagnostics with exact byte ranges.
+    ///
+    /// These diagnostics are independent of the terminal-oriented
+    /// [`Display`](std::fmt::Display) rendering and are suitable for language
+    /// servers and other editor tooling.
+    #[must_use]
+    pub fn diagnostics(&self) -> Vec<RotoDiagnostic> {
+        self.errors
+            .iter()
+            .map(|error| match error {
+                RotoError::Read(name, io) => RotoDiagnostic {
+                    severity: RotoDiagnosticSeverity::Error,
+                    message: format!("Could not read file `{name}`: {io}"),
+                    span: None,
+                    labels: Vec::new(),
+                    notes: Vec::new(),
+                    help: Vec::new(),
+                },
+                RotoError::Parse(error) => {
+                    let diagnostic = error.diagnostic();
+                    RotoDiagnostic {
+                        severity: RotoDiagnosticSeverity::Error,
+                        message: format!(
+                            "Parse error: {}",
+                            diagnostic.message
+                        ),
+                        span: Some(diagnostic.span),
+                        labels: diagnostic
+                            .labels
+                            .into_iter()
+                            .map(|label| RotoDiagnosticLabel {
+                                file: label.span.file,
+                                range: label.span.range(),
+                                level: match label.severity {
+                                    roto_syntax::DiagnosticSeverity::Error => {
+                                        RotoDiagnosticSeverity::Error
+                                    }
+                                    roto_syntax::DiagnosticSeverity::Warning => {
+                                        RotoDiagnosticSeverity::Warning
+                                    }
+                                    roto_syntax::DiagnosticSeverity::Info => {
+                                        RotoDiagnosticSeverity::Info
+                                    }
+                                },
+                                message: label.message,
+                            })
+                            .collect(),
+                        notes: diagnostic.notes,
+                        help: diagnostic.help,
+                    }
+                }
+                RotoError::Type(error) => {
+                    let span = self.spans.get(error.location);
+                    RotoDiagnostic {
+                        severity: RotoDiagnosticSeverity::Error,
+                        message: format!(
+                            "Type error: {}",
+                            error.description
+                        ),
+                        span: Some(span),
+                        labels: error
+                            .labels
+                            .iter()
+                            .map(|label| {
+                                let span = self.spans.get(label.id);
+                                RotoDiagnosticLabel {
+                                    file: span.file,
+                                    range: span.range(),
+                                    level: match label.level {
+                                        Level::Error => {
+                                            RotoDiagnosticSeverity::Error
+                                        }
+                                        Level::Info => {
+                                            RotoDiagnosticSeverity::Info
+                                        }
+                                    },
+                                    message: label.message.clone(),
+                                }
+                            })
+                            .collect(),
+                        notes: error.notes.clone(),
+                        help: Vec::new(),
+                    }
+                }
+                RotoError::TestsFailed() => RotoDiagnostic {
+                    severity: RotoDiagnosticSeverity::Error,
+                    message: "Tests failed".into(),
+                    span: None,
+                    labels: Vec::new(),
+                    notes: Vec::new(),
+                    help: Vec::new(),
+                },
+                RotoError::CouldNotRetrieveFunction(error) => {
+                    RotoDiagnostic {
+                        severity: RotoDiagnosticSeverity::Error,
+                        message: format!(
+                            "Could not retrieve function: {error}"
+                        ),
+                        span: None,
+                        labels: Vec::new(),
+                        notes: Vec::new(),
+                        help: Vec::new(),
+                    }
+                }
+                RotoError::Custom(message) => RotoDiagnostic {
+                    severity: RotoDiagnosticSeverity::Error,
+                    message: message.clone(),
+                    span: None,
+                    labels: Vec::new(),
+                    notes: Vec::new(),
+                    help: Vec::new(),
+                },
+            })
+            .collect()
+    }
+
     /// Write this report to a type implementing [`fmt::Write`].
     pub fn write(&self, mut f: impl fmt::Write, color: bool) -> fmt::Result {
         use ariadne::{Color, Label, Report, ReportKind};
@@ -126,104 +294,44 @@ impl RotoReport {
 
         let config = ariadne::Config::new().with_color(color);
 
-        for error in &self.errors {
-            match error {
-                RotoError::Read(name, io) => {
-                    write!(f, "Could not read file `{name}`: {io}")?;
-                }
-                RotoError::Parse(error) => {
-                    let file = self.filename(error.location);
-                    let file_text = file_cache.fetch(&file).unwrap().text();
+        for diagnostic in self.diagnostics() {
+            let Some(span) = diagnostic.span else {
+                write!(f, "{}", diagnostic.message)?;
+                continue;
+            };
 
-                    let label_message = error.kind.label();
-                    let label = Label::new((
-                        self.filename(error.location),
-                        error.location.character_range(file_text),
-                    ))
-                    .with_message(label_message)
-                    .with_color(Color::Red);
+            let file = self.filename(span);
+            let file_text = &self.files[span.file].contents;
+            let labels = diagnostic.labels.iter().map(|label| {
+                let span = Span::new(label.file, label.range.clone());
+                Label::new((
+                    self.filename(span),
+                    span.character_range(&self.files[span.file].contents),
+                ))
+                .with_message(&label.message)
+                .with_color(match label.level {
+                    RotoDiagnosticSeverity::Error => Color::Red,
+                    RotoDiagnosticSeverity::Warning => Color::Yellow,
+                    RotoDiagnosticSeverity::Info => Color::Blue,
+                })
+            });
 
-                    let mut report = Report::build(
-                        ReportKind::Error,
-                        (file, error.location.character_range(file_text)),
-                    )
-                    .with_config(config)
-                    .with_message(format!("Parse error: {}", error))
-                    .with_label(label);
+            let mut report = Report::build(
+                ReportKind::Error,
+                (file, span.character_range(file_text)),
+            )
+            .with_config(config)
+            .with_message(&diagnostic.message)
+            .with_labels(labels);
 
-                    if let Some(hint) = error.kind.hint() {
-                        report = report.with_help(hint);
-                    }
-
-                    for hint in &error.hints {
-                        let label = Label::new((
-                            self.filename(hint.location),
-                            hint.location.start..hint.location.end,
-                        ))
-                        .with_message(&hint.text)
-                        .with_color(Color::Yellow);
-
-                        report = report.with_label(label)
-                    }
-
-                    if let Some(note) = &error.note {
-                        report = report.with_note(note);
-                    }
-
-                    let report = report.finish();
-
-                    let mut v = Vec::new();
-                    report.write(&mut file_cache, &mut v).unwrap();
-                    let s = String::from_utf8_lossy(&v);
-                    write!(f, "{s}")?;
-                }
-                RotoError::Type(error) => {
-                    let file = self.filename(self.spans.get(error.location));
-                    let file_text = file_cache.fetch(&file).unwrap().text();
-
-                    let labels = error.labels.iter().map(|l| {
-                        let s = self.spans.get(l.id);
-                        Label::new((
-                            self.filename(s),
-                            s.character_range(file_text),
-                        ))
-                        .with_message(&l.message)
-                        .with_color(match l.level {
-                            Level::Error => Color::Red,
-                            Level::Info => Color::Blue,
-                        })
-                    });
-
-                    let span = self.spans.get(error.location);
-                    let mut report = Report::build(
-                        ReportKind::Error,
-                        (file, span.character_range(file_text)),
-                    )
-                    .with_config(config)
-                    .with_message(format!(
-                        "Type error: {}",
-                        error.description
-                    ))
-                    .with_labels(labels);
-
-                    report.with_notes(&error.notes);
-                    let report = report.finish();
-
-                    let mut v = Vec::new();
-                    report.write(&mut file_cache, &mut v).unwrap();
-                    let s = String::from_utf8_lossy(&v);
-                    write!(f, "{s}")?;
-                }
-                RotoError::TestsFailed() => {
-                    write!(f, "Tests failed")?;
-                }
-                RotoError::CouldNotRetrieveFunction(e) => {
-                    write!(f, "Could not retrieve function: {e}")?;
-                }
-                RotoError::Custom(s) => {
-                    write!(f, "{s}")?;
-                }
+            report.with_notes(&diagnostic.notes);
+            for help in diagnostic.help {
+                report = report.with_help(help);
             }
+
+            let mut output = Vec::new();
+            report.finish().write(&mut file_cache, &mut output).unwrap();
+            write!(f, "{}", String::from_utf8_lossy(&output))?;
         }
 
         Ok(())

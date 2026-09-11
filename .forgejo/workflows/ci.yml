@@ -149,6 +149,21 @@ jobs:
         components: rustfmt
     - run: cargo fmt --all --check
 
+  syntax-wasm:
+    name: Check syntax frontend on wasm
+    runs-on: docker
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+    - name: Install Rust
+      uses: https://github.com/dtolnay/rust-toolchain@v1
+      with:
+        toolchain: stable
+        targets: wasm32-unknown-unknown
+    - run: cargo check -p roto-syntax --target wasm32-unknown-unknown
+
   spelling:
       name: Spell Check with Typos
       runs-on: docker

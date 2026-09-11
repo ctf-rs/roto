@@ -35,12 +35,10 @@ disas = ["cranelift-codegen/disas"]
 ariadne = "0.6.0"
 clap = { version = "4.5.54", features = ["derive"], optional = true }
 env_logger = { version = "0.11", optional = true }
-unicode-ident = "1.0.22"
-inetnum = "0.1.0"
+inetnum.workspace = true
 log = "0.4"
 roto-macros = { workspace = true }
-symbol_table = { version = "0.5.0", features = ["global"] }
-rustc-literal-escaper = "0.0.7"
+roto-syntax = { workspace = true }
 libc = "0.2"
 sealed = "0.6.0"
 indexmap = "2.14.0"
@@ -75,7 +73,7 @@ debug = "full"
 ignored = ["cranelift-jit"]
 
 [workspace]
-members = ["macros"]
+members = ["macros", "syntax"]
 
 [workspace.package]
 version = "0.12.0"
@@ -92,7 +90,12 @@ categories = ["compilers", "network-programming"]
 readme = "README.md"
 
 [workspace.dependencies]
+inetnum = "0.1.0"
 roto-macros = { path = "macros", version = "=0.12.0" }
+roto-syntax = { path = "syntax", version = "=0.12.0" }
+rustc-literal-escaper = "0.0.7"
+symbol_table = { version = "0.5.0", features = ["global"] }
+unicode-ident = "1.0.22"
 
 [[bench]]
 name = "fibonacci"

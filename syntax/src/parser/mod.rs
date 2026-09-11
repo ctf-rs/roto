@@ -18,7 +18,7 @@ use token::{Keyword, Token};
 
 use self::meta::{Meta, Span, Spans};
 
-mod error;
+pub mod error;
 mod expr;
 mod filter_map;
 pub mod lexer;
@@ -135,7 +135,7 @@ impl<'source> Parser<'source, '_> {
         let mut items = Vec::new();
 
         // If there are no fields, return the empty vec.
-        if self.peek_is(close.clone()) {
+        if self.peek_is(close) {
             let end_span = self.take(close)?;
             let span = start_span.merge(end_span);
             return Ok(self.add_span(span, items));
@@ -145,10 +145,10 @@ impl<'source> Parser<'source, '_> {
         items.push(parser(self)?);
 
         // Now each field must be separated by a comma
-        while self.next_is(sep.clone()) {
+        while self.next_is(sep) {
             // If we have found the curly right, we have just
             // parsed the trailing comma.
-            if self.peek_is(close.clone()) {
+            if self.peek_is(close) {
                 break;
             }
 
@@ -347,7 +347,7 @@ impl Parser<'_, '_> {
                 let note = format!(
                     "`{token}` is a keyword and cannot be used as an identifier."
                 );
-                let err = ParseError::expected("an identifier", &token, span)
+                let err = ParseError::expected("an identifier", token, span)
                     .with_note(note);
                 return Err(err.into());
             }

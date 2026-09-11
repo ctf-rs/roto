@@ -12,18 +12,11 @@ pub struct Lexer<'a> {
     input: &'a str,
     original_length: usize,
     peeked: VecDeque<(Result<Token<'a>, ()>, Range<usize>)>,
-    pub almost_keyword:
+    pub(crate) almost_keyword:
         Option<(Identifier, Range<usize>, Option<&'static str>)>,
 }
 
 impl<'a> Lexer<'a> {
-    pub fn next(&mut self) -> Option<(Result<Token<'a>, ()>, Range<usize>)> {
-        if let Some(t) = self.peeked.pop_front() {
-            return Some(t);
-        }
-        self.next_inner()
-    }
-
     pub fn peek(&mut self) -> Option<&(Result<Token<'a>, ()>, Range<usize>)> {
         if self.peeked.is_empty()
             && let Some(t) = self.next_inner()
@@ -60,12 +53,26 @@ impl<'a> Lexer<'a> {
                     None
                 } else {
                     let start = self.original_length - self.input.len();
-                    let end = start + 1;
+                    let width =
+                        self.input.chars().next().map_or(1, char::len_utf8);
+                    self.bump(width);
+                    let end = start + width;
                     Some((Err(()), start..end))
                 }
             }
             ControlFlow::Break((tok, span)) => Some((Ok(tok), span)),
         }
+    }
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = (Result<Token<'a>, ()>, Range<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(token) = self.peeked.pop_front() {
+            return Some(token);
+        }
+        self.next_inner()
     }
 }
 
@@ -104,6 +111,7 @@ impl<'s> Lexer<'s> {
 
         self.ipv6()?;
         self.ipv4()?;
+        self.block_comment()?;
         self.two_char_punctuation()?;
         self.one_char_punctuation()?;
         self.as_number()?;
@@ -164,8 +172,7 @@ impl<'s> Lexer<'s> {
             [b'/', b'='] => Token::SlashEq,
             [b'%', b'='] => Token::PercentEq,
 
-            // These are added for better diagnostics
-            [b'/', b'*'] => Token::SlashStar,
+            // This is added for better diagnostics
             [b'-', b'-'] => Token::HyphenHyphen,
 
             _ => return ControlFlow::Continue(()),
@@ -174,6 +181,33 @@ impl<'s> Lexer<'s> {
         let (_, span) = self.bump(2);
 
         ControlFlow::Break((tok, span))
+    }
+
+    fn block_comment(&mut self) -> ControlFlow<(Token<'s>, Range<usize>)> {
+        if !self.input.starts_with("/*") {
+            return ControlFlow::Continue(());
+        }
+
+        let bytes = self.input.as_bytes();
+        let mut depth = 1usize;
+        let mut end = 2usize;
+        while end < bytes.len() && depth > 0 {
+            if bytes[end..].starts_with(b"/*") {
+                depth += 1;
+                end += 2;
+            } else if bytes[end..].starts_with(b"*/") {
+                depth -= 1;
+                end += 2;
+            } else {
+                end += self.input[end..]
+                    .chars()
+                    .next()
+                    .map_or(1, char::len_utf8);
+            }
+        }
+
+        let (comment, span) = self.bump(end);
+        ControlFlow::Break((Token::BlockComment(comment), span))
     }
 
     fn one_char_punctuation(
@@ -351,7 +385,7 @@ impl<'s> Lexer<'s> {
     pub fn f_string_part(
         &mut self,
     ) -> Option<(FStringToken<'s>, Range<usize>)> {
-        let mut chars = self.input.chars().enumerate();
+        let mut chars = self.input.char_indices();
         'outer: while let Some((i, c)) = chars.next() {
             match c {
                 '\\' => {
@@ -372,12 +406,12 @@ impl<'s> Lexer<'s> {
                     continue 'outer;
                 }
                 '{' => {
-                    let (i, c) = chars.next()?;
+                    let (_, c) = chars.next()?;
                     if c == '{' {
                         continue 'outer;
                     } else {
                         // We bump to _before_ the curly
-                        let (tok, span) = self.bump(i - 1);
+                        let (tok, span) = self.bump(i);
                         return Some((
                             FStringToken::StringIntermediate(tok),
                             span,
@@ -386,9 +420,7 @@ impl<'s> Lexer<'s> {
                 }
                 '"' => {
                     // Check for the end of the string, which is an unescaped quote
-                    let (tok, span) = self.bump(i);
-                    // Eat the `"`
-                    self.bump(1);
+                    let (tok, span) = self.bump(i + c.len_utf8());
                     return Some((FStringToken::StringEnd(tok), span));
                 }
                 _ => {}

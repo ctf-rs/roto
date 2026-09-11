@@ -40,6 +40,46 @@ impl FileTree {
 }
 
 impl Parsed {
+    pub(crate) fn from_single_parsed(
+        file_tree: FileTree,
+        parsed: roto_syntax::ParsedSource,
+    ) -> Result<Self, RotoReport> {
+        let (parsed_file, module, tree, spans, source) = parsed.into_parts();
+        let matches_file = match file_tree.files.as_slice() {
+            [file] => {
+                file.module_name == module.as_str()
+                    && file.contents == source
+                    && file.children.is_empty()
+            }
+            _ => false,
+        };
+
+        if parsed_file != 0 || !matches_file {
+            return Err(RotoReport {
+                files: file_tree.files,
+                errors: vec![RotoError::Custom(
+                    "parsed source does not match the single-file FileTree"
+                        .into(),
+                )],
+                spans,
+            });
+        }
+
+        let module = Module {
+            ident: module,
+            ast: tree,
+            children: BTreeMap::new(),
+            parent: None,
+        };
+        Ok(Self {
+            module_tree: ModuleTree {
+                modules: vec![module],
+            },
+            file_tree,
+            spans,
+        })
+    }
+
     fn from_files(file_tree: FileTree) -> Result<Self, RotoReport> {
         let mut file_to_mod = BTreeMap::new();
         let mut modules = Vec::new();

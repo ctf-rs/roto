@@ -845,7 +845,7 @@ impl Parser<'_, '_> {
                     _ => {
                         let n = s.parse::<i64>().map_err(|e| {
                             ParseError::invalid_literal(
-                                "integer", &token, e, span,
+                                "integer", token, e, span,
                             )
                         })?;
                         let ty = match int_ty {
@@ -875,7 +875,7 @@ impl Parser<'_, '_> {
             Token::Float(s, float_ty) => {
                 let s = s.replace("_", "");
                 let f = s.parse::<f64>().map_err(|e| {
-                    ParseError::invalid_literal("float", &token, e, span)
+                    ParseError::invalid_literal("float", token, e, span)
                 })?;
                 let ty = match float_ty {
                     "f32" => Some(FloatType::F32),
@@ -1108,7 +1108,7 @@ impl Parser<'_, '_> {
             Token::Ident(s) => s.into(),
             _ => return Err(ParseError::expected(
                 "an identifier, `super`, `pkg` or `dep`",
-                &tok,
+                tok,
                 span,
             )
             .with_note(format!(
@@ -1126,22 +1126,31 @@ impl Parser<'_, '_> {
 
         // TODO: we need to properly unescape the `{{` and `}}`
         while let Some((part, span)) = self.lexer.f_string_part() {
-            let (FStringToken::StringEnd(s)
-            | FStringToken::StringIntermediate(s)) = &part;
+            let full_span = Span::new(self.file, span);
+            let (s, string_span, is_end) = match part {
+                FStringToken::StringIntermediate(s) => (s, full_span, false),
+                FStringToken::StringEnd(s) => {
+                    let s = s
+                        .strip_suffix('"')
+                        .expect("f-string end includes its closing quote");
+                    let string_span = Span {
+                        end: full_span.end - 1,
+                        ..full_span
+                    };
+                    (s, string_span, true)
+                }
+            };
 
             if !s.is_empty() {
-                let span = Span {
-                    file: self.file,
-                    start: span.start,
-                    end: span.end,
-                };
-                let s = unescape_str(s, span)?;
+                let s = unescape_str(s, string_span)?;
                 let s = s.replace("{{", "{").replace("}}", "}");
-                parts.push(self.spans.add(span, FStringPart::String(s)));
+                parts.push(
+                    self.spans.add(string_span, FStringPart::String(s)),
+                );
             }
 
-            if matches!(part, FStringToken::StringEnd(_)) {
-                let span = start_span.merge(Span::new(self.file, span));
+            if is_end {
+                let span = start_span.merge(full_span);
                 return Ok(self.spans.add(span, Expr::FString(parts)));
             }
 

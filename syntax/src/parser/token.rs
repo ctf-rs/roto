@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Token<'s> {
     Ident(&'s str),
 
@@ -28,7 +28,11 @@ pub enum Token<'s> {
     QuestionMark,
     SemiColon,
     Slash,
-    SlashStar,
+    /// A possibly nested `/* ... */` block comment.
+    ///
+    /// Roto rejects this syntax, but retaining it as one token prevents
+    /// tooling from interpreting the contents as code.
+    BlockComment(&'s str),
     Star,
     Percent,
     PlusEq,
@@ -63,10 +67,17 @@ pub enum Token<'s> {
 
     /// An f-string start token signals to the parser that an f-string is coming up
     FStringStart,
+
+    /// Literal text before an interpolated expression in an f-string.
+    FStringText(&'s str),
+
+    /// Final literal text and the closing quote of an f-string.
+    FStringEnd(&'s str),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FStringToken<'s> {
-    /// The final part of a string.
+    /// The final part of a string, including its closing quote.
     ///
     /// This is the token from the current position to the end of the string.
     /// For non-f-strings, this will be the entire string.
@@ -76,7 +87,7 @@ pub enum FStringToken<'s> {
     StringIntermediate(&'s str),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Keyword {
     Accept,
     Const,
@@ -129,7 +140,7 @@ impl Display for Token<'_> {
             Token::QuestionMark => "?",
             Token::SemiColon => ";",
             Token::Slash => "/",
-            Token::SlashStar => "/*",
+            Token::BlockComment(_) => "/*",
             Token::Star => "*",
             Token::Percent => "%",
             Token::PlusEq => "+=",
@@ -170,6 +181,7 @@ impl Display for Token<'_> {
             Token::Bool(false) => "false",
 
             Token::FStringStart => "f\"",
+            Token::FStringText(s) | Token::FStringEnd(s) => s,
         };
 
         f.write_str(s)
@@ -177,7 +189,9 @@ impl Display for Token<'_> {
 }
 
 impl Keyword {
-    fn as_str(&self) -> &'static str {
+    /// Return the keyword's canonical source spelling.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Keyword::Accept => "accept",
             Keyword::Const => "const",

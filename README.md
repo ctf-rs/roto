@@ -55,6 +55,10 @@ cargo run --example <example name>
   your system.
 - Roto scripts are **hot-reloadable**. The host application can recompile
   scripts at any time.
+- The `roto-syntax` workspace crate exposes Roto's authoritative lexer,
+  parser, public AST, exact byte spans, and structured parse diagnostics
+  without pulling in the native JIT. It supports `wasm32-unknown-unknown` for
+  browser and offline editor tooling.
 
 ## Limitations
 

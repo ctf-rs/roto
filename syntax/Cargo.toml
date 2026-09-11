@@ -1,0 +1,20 @@
+[package]
+name = "roto-syntax"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "the target-independent lexer, parser, AST, and syntax diagnostics for Roto"
+documentation = "https://docs.rs/roto-syntax/"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+[dependencies]
+inetnum.workspace = true
+rustc-literal-escaper.workspace = true
+symbol_table.workspace = true
+unicode-ident.workspace = true

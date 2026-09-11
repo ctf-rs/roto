@@ -4,7 +4,7 @@
 // Needed for the roto macros
 extern crate self as roto;
 
-mod ast;
+pub(crate) use roto_syntax::ast;
 
 #[cfg(feature = "cli")]
 mod cli;
@@ -17,7 +17,7 @@ mod label;
 mod lir;
 mod mir;
 mod module;
-pub(crate) mod parser;
+pub(crate) use roto_syntax::parser;
 mod pipeline;
 mod runtime;
 pub mod tools;
@@ -35,10 +35,14 @@ pub use crate::value::List;
 pub use codegen::{TypedFunc, check::RotoFunc};
 pub use file_tree::{FileSpec, FileTree, SourceFile};
 pub(crate) use pipeline::RotoError;
-pub use pipeline::{Package, RotoReport};
+pub use pipeline::{
+    Package, RotoDiagnostic, RotoDiagnosticLabel, RotoDiagnosticLevel,
+    RotoDiagnosticSeverity, RotoReport,
+};
 pub use roto_macros::{
     Context, roto_function, roto_method, roto_static_method,
 };
+pub use roto_syntax as syntax;
 pub use runtime::{
     Ctx, NoCtx, RegistrationError, Runtime,
     context::{Context, ContextDescription},
@@ -297,7 +301,7 @@ impl std::fmt::Display for Location {
 ///
 /// This is used by the documentation test framework to determine whether the
 /// script should be wrapped in an `fn main`.
-pub fn has_main_function(script: &str) -> parser::ParseResult<bool> {
+pub fn has_main_function(script: &str) -> roto_syntax::ParseResult<bool> {
     let file = 0;
     let mut spans = parser::meta::Spans::default();
     let ast = parser::Parser::parse(file, &mut spans, script)?;

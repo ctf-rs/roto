@@ -98,6 +98,28 @@ impl FileTree {
         let pkg = checked.lower_to_mir().lower_to_lir().codegen();
         Ok(pkg)
     }
+
+    /// Compile an already parsed single-file source.
+    ///
+    /// This avoids reparsing source that editor tooling has already analyzed
+    /// with the shared [`roto_syntax`] frontend. The parsed source must use
+    /// file identifier zero and exactly match this file tree's source and
+    /// module name.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured Roto report when the parsed source does not match
+    /// this file tree or when type checking fails.
+    pub fn compile_parsed<Ctx: OptCtx>(
+        self,
+        parsed: roto_syntax::ParsedSource,
+        rt: &Runtime<Ctx>,
+    ) -> Result<Package<Ctx>, RotoReport> {
+        let checked =
+            crate::module::Parsed::from_single_parsed(self, parsed)?
+                .typecheck(rt)?;
+        Ok(checked.lower_to_mir().lower_to_lir().codegen())
+    }
 }
 
 /// Directory structure that makes up a Roto script
