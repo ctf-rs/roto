@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    Context, FileTree, List, NoCtx, Runtime,
+    Context, FileTree, List, NoCtx, RotoEnum, Runtime,
     file_tree::FileSpec,
     library,
     pipeline::Package,
@@ -4499,6 +4499,360 @@ fn define_enum_type() {
 
     let res = f.call(false);
     assert_eq!(res, 20);
+}
+
+#[test]
+fn rust_backed_enum_round_trip_and_match() {
+    #[derive(Clone, Debug, PartialEq)]
+    struct Payload(u32);
+
+    #[derive(Debug, PartialEq, RotoEnum)]
+    enum Nested {
+        Value(u32),
+        Empty,
+    }
+
+    #[derive(Debug, PartialEq, RotoEnum)]
+    enum External {
+        Unit,
+        Multi(u32, bool),
+        Custom(#[roto(val)] Payload),
+        Nested(Nested),
+    }
+
+    let rt = Runtime::from_lib(library! {
+        // Deliberately register the enums before their payload type. Type
+        // declarations in a library are order independent.
+        #[enum_type] type External = External;
+        #[enum_type] type Nested = Nested;
+        #[clone] type Payload = Val<Payload>;
+
+        fn make_external(kind: u8) -> External {
+            match kind {
+                0 => External::Unit,
+                1 => External::Multi(40, true),
+                2 => External::Custom(Payload(41)),
+                _ => External::Nested(Nested::Value(42)),
+            }
+        }
+
+        fn identity_external(value: External) -> External {
+            value
+        }
+
+        fn payload_value(payload: Val<Payload>) -> u32 {
+            payload.0.0
+        }
+
+        impl Val<Payload> {
+            fn new() -> Val<Payload> {
+                Val(Payload(43))
+            }
+        }
+    })
+    .unwrap();
+
+    let s = src!(
+        r#"
+        fn inspect(kind: u8) -> u32 {
+            match identity_external(make_external(kind)) {
+                Unit => 10,
+                Multi(value, enabled) => {
+                    if enabled { value + 1 } else { value }
+                },
+                Custom(payload) => payload_value(payload),
+                Nested(value) => {
+                    match value {
+                        Value(number) => number,
+                        Empty => 0,
+                    }
+                },
+            }
+        }
+
+        fn construct(kind: u8) -> External {
+            if kind == 0 {
+                External.Unit
+            } else if kind == 1 {
+                External.Multi(7, false)
+            } else if kind == 2 {
+                External.Custom(Payload.new())
+            } else {
+                External.Nested(Nested.Empty)
+            }
+        }
+
+        fn inspect_input(value: External) -> u32 {
+            match value {
+                Unit => 10,
+                Multi(number, enabled) => {
+                    if enabled { number + 1 } else { number }
+                },
+                Custom(payload) => payload_value(payload),
+                Nested(value) => {
+                    match value {
+                        Value(number) => number,
+                        Empty => 0,
+                    }
+                },
+            }
+        }
+    "#
+    );
+
+    let mut pkg = compile_with_runtime(s, rt);
+    let inspect = pkg.get_function::<fn(u8) -> u32>("inspect").unwrap();
+    assert_eq!(inspect.call(0), 10);
+    assert_eq!(inspect.call(1), 41);
+    assert_eq!(inspect.call(2), 41);
+    assert_eq!(inspect.call(3), 42);
+
+    let construct =
+        pkg.get_function::<fn(u8) -> External>("construct").unwrap();
+    assert_eq!(construct.call(0), External::Unit);
+    assert_eq!(construct.call(1), External::Multi(7, false));
+    assert_eq!(construct.call(2), External::Custom(Payload(43)));
+    assert_eq!(construct.call(3), External::Nested(Nested::Empty));
+
+    let inspect_input = pkg
+        .get_function::<fn(External) -> u32>("inspect_input")
+        .unwrap();
+    assert_eq!(inspect_input.call(External::Unit), 10);
+    assert_eq!(inspect_input.call(External::Multi(8, true)), 9);
+    assert_eq!(inspect_input.call(External::Custom(Payload(11))), 11);
+    assert_eq!(inspect_input.call(External::Nested(Nested::Value(12))), 12);
+}
+
+#[test]
+fn rust_backed_enums_can_reuse_variant_names() {
+    #[repr(u8)]
+    #[derive(Debug, PartialEq, RotoEnum)]
+    enum Http {
+        Request(u32) = 7,
+        Response(bool) = 42,
+    }
+
+    #[repr(u8)]
+    #[derive(Debug, PartialEq, RotoEnum)]
+    enum L4 {
+        Request(bool) = 3,
+        Response(u32) = 99,
+    }
+
+    let rt = Runtime::from_lib(library! {
+        #[enum_type] type Http = Http;
+        #[enum_type] type L4 = L4;
+    })
+    .unwrap();
+
+    let s = src!(
+        r#"
+        fn inspect_http(value: Http) -> u32 {
+            match value {
+                Request(number) => number,
+                Response(success) => {
+                    if success { 1 } else { 0 }
+                },
+            }
+        }
+
+        fn inspect_l4(value: L4) -> u32 {
+            match value {
+                Request(success) => {
+                    if success { 10 } else { 20 }
+                },
+                Response(number) => number,
+            }
+        }
+
+        fn make_http() -> Http {
+            Http.Request(30)
+        }
+
+        fn make_l4() -> L4 {
+            L4.Response(40)
+        }
+    "#
+    );
+
+    let mut pkg = compile_with_runtime(s, rt);
+    let inspect_http =
+        pkg.get_function::<fn(Http) -> u32>("inspect_http").unwrap();
+    assert_eq!(inspect_http.call(Http::Request(11)), 11);
+    assert_eq!(inspect_http.call(Http::Response(true)), 1);
+
+    let inspect_l4 = pkg.get_function::<fn(L4) -> u32>("inspect_l4").unwrap();
+    assert_eq!(inspect_l4.call(L4::Request(false)), 20);
+    assert_eq!(inspect_l4.call(L4::Response(22)), 22);
+
+    let make_http = pkg.get_function::<fn() -> Http>("make_http").unwrap();
+    assert_eq!(make_http.call(), Http::Request(30));
+
+    let make_l4 = pkg.get_function::<fn() -> L4>("make_l4").unwrap();
+    assert_eq!(make_l4.call(), L4::Response(40));
+}
+
+#[test]
+fn rust_backed_enum_uses_registered_non_contiguous_tags() {
+    #[derive(Debug, PartialEq)]
+    enum External {
+        Request(u32),
+        Response(bool),
+    }
+
+    #[repr(u8)]
+    #[derive(Clone, PartialEq)]
+    enum ExternalRepr {
+        Request(u32) = 7,
+        Response(bool) = 42,
+    }
+
+    unsafe impl RotoEnum for External {
+        type Repr = ExternalRepr;
+
+        fn into_repr(self) -> Self::Repr {
+            match self {
+                Self::Request(value) => ExternalRepr::Request(value),
+                Self::Response(value) => ExternalRepr::Response(value),
+            }
+        }
+
+        fn from_repr(repr: Self::Repr) -> Self {
+            match repr {
+                ExternalRepr::Request(value) => Self::Request(value),
+                ExternalRepr::Response(value) => Self::Response(value),
+            }
+        }
+
+        fn variants() -> Vec<crate::RotoEnumVariant> {
+            vec![
+                crate::RotoEnumVariant::new(
+                    "Request",
+                    7,
+                    "",
+                    vec![crate::RotoEnumField::of::<u32>()],
+                ),
+                crate::RotoEnumVariant::new(
+                    "Response",
+                    42,
+                    "",
+                    vec![crate::RotoEnumField::of::<bool>()],
+                ),
+            ]
+        }
+    }
+
+    let rt = Runtime::from_lib(library! {
+        #[enum_type] type External = External;
+    })
+    .unwrap();
+    let s = src!(
+        r#"
+        fn inspect(value: External) -> u32 {
+            match value {
+                Request(number) => number,
+                Response(success) => {
+                    if success { 1 } else { 0 }
+                },
+            }
+        }
+
+        fn make_response() -> External {
+            External.Response(true)
+        }
+    "#
+    );
+
+    let mut pkg = compile_with_runtime(s, rt);
+    let inspect = pkg
+        .get_function::<fn(External) -> u32>("inspect")
+        .unwrap();
+    assert_eq!(inspect.call(External::Request(12)), 12);
+    assert_eq!(inspect.call(External::Response(true)), 1);
+
+    let make_response = pkg
+        .get_function::<fn() -> External>("make_response")
+        .unwrap();
+    assert_eq!(make_response.call(), External::Response(true));
+}
+
+#[test]
+fn rust_backed_enum_clone_drop_balance() {
+    static CLONES: AtomicUsize = AtomicUsize::new(0);
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug)]
+    struct Tracked;
+
+    impl Clone for Tracked {
+        fn clone(&self) -> Self {
+            CLONES.fetch_add(1, Ordering::Relaxed);
+            Self
+        }
+    }
+
+    impl PartialEq for Tracked {
+        fn eq(&self, _other: &Self) -> bool {
+            true
+        }
+    }
+
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            DROPS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[derive(RotoEnum)]
+    enum External {
+        Unit,
+        Payload(#[roto(val)] Tracked),
+    }
+
+    CLONES.store(0, Ordering::Relaxed);
+    DROPS.store(0, Ordering::Relaxed);
+
+    let rt = Runtime::from_lib(library! {
+        #[enum_type] type External = External;
+        #[clone] type Tracked = Val<Tracked>;
+
+        fn make_tracked(with_payload: bool) -> External {
+            if with_payload {
+                External::Payload(Tracked)
+            } else {
+                External::Unit
+            }
+        }
+    })
+    .unwrap();
+
+    let s = src!(
+        r#"
+        fn exercise(with_payload: bool) -> bool {
+            let value = make_tracked(with_payload);
+            let copy = value;
+            match value {
+                Unit => false,
+                Payload(payload) => payload == payload,
+            }
+        }
+    "#
+    );
+
+    let mut pkg = compile_with_runtime(s, rt);
+    let exercise = pkg.get_function::<fn(bool) -> bool>("exercise").unwrap();
+    assert!(!exercise.call(false));
+    assert_eq!(CLONES.load(Ordering::Relaxed), 0);
+    assert_eq!(DROPS.load(Ordering::Relaxed), 0);
+
+    assert!(exercise.call(true));
+    drop(exercise);
+    drop(pkg);
+
+    let clones = CLONES.load(Ordering::Relaxed);
+    let drops = DROPS.load(Ordering::Relaxed);
+    assert!(clones > 0, "the enum payload was never cloned");
+    assert_eq!(drops, clones + 1);
 }
 
 #[test]

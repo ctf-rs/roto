@@ -9,7 +9,7 @@ use crate::{
         lower::{Location, LowerCtx},
         value::IrType,
     },
-    mir::{Ty, TyRef},
+    mir::{EnumVariant, Ty, TyRef},
     runtime::{
         Movability,
         layout::{Layout, LayoutBuilder},
@@ -131,7 +131,7 @@ impl Lowerer<'_, '_> {
             }
             Ty::Enum(variants) => variants
                 .iter()
-                .flat_map(|v| &v.1)
+                .flat_map(|variant| &variant.fields)
                 .any(|&t| self.needs_clone(t)),
             Ty::Primitive(Primitive::String) => true,
             Ty::Primitive(_) => false,
@@ -328,7 +328,7 @@ impl Lowerer<'_, '_> {
         &mut self,
         return_var: Var,
         root_var: Var,
-        variants: &[(Identifier, Vec<TyRef>)],
+        variants: &[EnumVariant],
     ) {
         let current_label = self.current_label();
         let lbl_prefix = self
@@ -336,12 +336,14 @@ impl Lowerer<'_, '_> {
             .label_store
             .wrap_internal(current_label, "clone".into());
 
-        let branches: Vec<_> = (0..variants.len())
-            .map(|i| {
+        let branches: Vec<_> = variants
+            .iter()
+            .enumerate()
+            .map(|(i, variant)| {
                 let ident = Identifier::from(&format!("variant_{i}"));
                 let lbl =
                     self.ctx.label_store.wrap_internal(lbl_prefix, ident);
-                (i, lbl)
+                (i, variant.tag, lbl)
             })
             .collect();
 
@@ -361,7 +363,10 @@ impl Lowerer<'_, '_> {
             discriminant.clone().into(),
         );
 
-        let mut lbls = branches.clone();
+        let mut lbls: Vec<_> = branches
+            .iter()
+            .map(|(_, tag, label)| (*tag, *label))
+            .collect();
         let default_lbl = lbls.pop().unwrap().1;
 
         self.emit(Instruction::Switch {
@@ -370,12 +375,12 @@ impl Lowerer<'_, '_> {
             default: default_lbl,
         });
 
-        for (idx, lbl) in branches {
+        for (idx, _, lbl) in branches {
             self.new_block(lbl);
             let variant = &variants[idx];
 
             let Some(layouts) = variant
-                .1
+                .fields
                 .iter()
                 .map(|ty| {
                     let layout = self.layout_of(*ty)?;

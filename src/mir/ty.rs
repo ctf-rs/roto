@@ -44,10 +44,17 @@ pub enum Ty {
     Unit,
     Never,
     Record(Vec<(Identifier, TyRef)>),
-    Enum(Vec<(Identifier, Vec<TyRef>)>),
+    Enum(Vec<EnumVariant>),
     Primitive(Primitive),
     List(TyRef),
     Runtime(std::any::TypeId),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct EnumVariant {
+    pub name: Identifier,
+    pub tag: usize,
+    pub fields: Vec<TyRef>,
 }
 
 /// A function signature in the MIR
@@ -145,8 +152,8 @@ impl Pool {
 
     /// Compute the layout of a Roto type
     ///
-    /// The layout of Roto types match the C representation of Rust types,
-    /// because we cannot rely on the Rust representation.
+    /// Records use Rust's C representation rules. Enums use Rust's primitive
+    /// `u8` enum representation, which is a union of C-layout variant structs.
     ///
     /// The C representation is described in the [Rust reference].
     ///
@@ -158,9 +165,9 @@ impl Pool {
     ///  - Fields are laid out in order, each padded to their alignment.
     ///  - The size **must** be a multiple of the alignment.
     ///
-    /// For enums we use the `#[repr(C, u8)]` representation, because other the
-    /// other representations are platform-specific. This means that the tag for
-    /// enums is a `u8` and therefore 1 byte.
+    /// For enums we use the `#[repr(u8)]` representation. This means that each
+    /// variant is laid out independently as a C-layout struct beginning with a
+    /// `u8` tag, and the enum is the union of those variant structs.
     ///
     /// To implement these rules, we rely on the [`Layout`] struct from the Rust
     /// standard library. This also allows to get the layout of some Rust types
@@ -187,16 +194,18 @@ impl Pool {
             Ty::Enum(variants) => {
                 let mut layout = None;
 
-                for (_, fields) in variants {
+                for variant in variants {
                     let mut builder = LayoutBuilder::new();
                     builder.add(&Layout::of::<u8>());
 
-                    let builder =
-                        fields.iter().try_fold(builder, |mut b, t| {
+                    let builder = variant.fields.iter().try_fold(
+                        builder,
+                        |mut b, t| {
                             let layout = self.layout_of(*t, rt)?;
                             b.add(&layout);
                             Some(b)
-                        });
+                        },
+                    );
 
                     // If the variant contains uninhabited fields, the
                     // entire variant is uninhabited, so we don't need
@@ -309,14 +318,14 @@ impl TypeDisplay for Ty {
             Ty::Enum(variants) => {
                 f.write_str("enum { ")?;
                 let mut first_variant = true;
-                for (identifier, ty_refs) in variants {
+                for variant in variants {
                     if !first_variant {
                         f.write_str(", ")?;
                     }
-                    identifier.fmt(type_info, f)?;
+                    variant.name.fmt(type_info, f)?;
                     f.write_str("(")?;
                     let mut first_field = true;
-                    for field in ty_refs {
+                    for field in &variant.fields {
                         if !first_field {
                             f.write_str(", ")?;
                         }

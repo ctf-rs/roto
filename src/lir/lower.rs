@@ -646,12 +646,14 @@ impl Lowerer<'_, '_> {
 
                         let variant = variants
                             .iter()
-                            .find(|v| v.0 == variant_name)
+                            .find(|v| v.name == variant_name)
                             .unwrap();
 
                         let mut last_ty = None;
                         let mut new_offset = 0;
-                        for &field_ty in variant.1.iter().take(n + 1) {
+                        for &field_ty in
+                            variant.fields.iter().take(n + 1)
+                        {
                             new_offset =
                                 builder.add(&self.layout_of(field_ty)?);
                             last_ty = Some(field_ty);
@@ -717,8 +719,12 @@ impl Lowerer<'_, '_> {
         let Ty::Enum(variants) = self.ctx.type_info.ty_pool.get(ty) else {
             ice!("Can only set discriminant of an enum type");
         };
-        let idx = variants.iter().position(|v| v.0 == variant).unwrap();
-        self.emit_write(to.into(), Operand::Value(IrValue::U8(idx as u8)));
+        let tag = variants
+            .iter()
+            .find(|candidate| candidate.name == variant)
+            .unwrap()
+            .tag;
+        self.emit_write(to.into(), Operand::Value(IrValue::U8(tag as u8)));
     }
 
     fn r#return(&mut self, var: mir::Var) {

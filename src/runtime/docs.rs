@@ -22,6 +22,7 @@ enum DocItem {
     Fn(DocFn),
     Ty(DocTy),
     Mod(DocMod),
+    Variant(DocVariant),
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,6 +52,21 @@ struct DocFn {
 struct DocConst {
     ident: String,
     ty: String,
+    doc: String,
+}
+
+struct SplitDocItems<'a> {
+    functions: Vec<&'a DocFn>,
+    constants: Vec<&'a DocConst>,
+    types: Vec<&'a DocTy>,
+    modules: Vec<&'a DocMod>,
+    variants: Vec<&'a DocVariant>,
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct DocVariant {
+    ident: String,
+    fields: Vec<String>,
     doc: String,
 }
 
@@ -120,13 +136,19 @@ impl DocMod {
         writeln!(file)?;
         writeln!(file, "{}", self.doc)?;
 
-        let (fs, cs, ts, ms) = Rt::split_items(&self.items);
+        let SplitDocItems {
+            functions,
+            constants,
+            types,
+            modules,
+            ..
+        } = Rt::split_items(&self.items);
 
-        if !ms.is_empty() {
+        if !modules.is_empty() {
             writeln!(file, "## Modules ")?;
             writeln!(file, "```{{toctree}}")?;
             writeln!(file, ":maxdepth: 1")?;
-            for m in &ms {
+            for m in &modules {
                 writeln!(
                     file,
                     "{} <{}>",
@@ -137,11 +159,11 @@ impl DocMod {
             writeln!(file, "```")?;
         }
 
-        if !ts.is_empty() {
+        if !types.is_empty() {
             writeln!(file, "## Types")?;
             writeln!(file, "```{{toctree}}")?;
             writeln!(file, ":maxdepth: 1")?;
-            for t in &ts {
+            for t in &types {
                 writeln!(
                     file,
                     "{} <{}>",
@@ -152,26 +174,26 @@ impl DocMod {
             writeln!(file, "```")?;
         }
 
-        if !cs.is_empty() {
+        if !constants.is_empty() {
             writeln!(file, "## Constants")?;
-            for c in &cs {
+            for c in &constants {
                 c.print_md(&mut file)?;
             }
         }
 
-        if !fs.is_empty() {
+        if !functions.is_empty() {
             writeln!(file, "## Functions")?;
-            for f in &fs {
+            for f in &functions {
                 f.print_md(&mut file)?;
             }
         }
 
         drop(file);
 
-        for m in &ms {
+        for m in &modules {
             m.print_md(&path, false)?;
         }
-        for t in &ts {
+        for t in &types {
             t.print_md(&path)?;
         }
 
@@ -208,15 +230,43 @@ impl DocTy {
         writeln!(file, "`````\n")?;
         writeln!(file)?;
 
-        let (fs, cs, _, _) = Rt::split_items(&self.items);
+        let SplitDocItems {
+            functions,
+            constants,
+            variants,
+            ..
+        } = Rt::split_items(&self.items);
 
-        for c in &cs {
+        if !variants.is_empty() {
+            writeln!(file, "## Variants")?;
+            for variant in variants {
+                variant.print_md(&mut file)?;
+            }
+        }
+        for c in &constants {
             c.print_md(&mut file)?;
         }
-        for f in &fs {
+        for f in &functions {
             f.print_md(&mut file)?;
         }
 
+        Ok(())
+    }
+}
+
+impl DocVariant {
+    fn print_md(&self, mut f: impl std::io::Write) -> io::Result<()> {
+        let fields = self.fields.join(", ");
+        let suffix = if fields.is_empty() {
+            String::new()
+        } else {
+            format!("({fields})")
+        };
+        writeln!(f, "`````{{roto:variant}} {}{}", self.ident, suffix)?;
+        for line in self.doc.lines() {
+            writeln!(f, "{line}")?;
+        }
+        writeln!(f, "`````\n")?;
         Ok(())
     }
 }
@@ -348,8 +398,19 @@ impl Rt {
                         items,
                     }));
                 }
-                DeclarationKind::Enum(_) => {
-                    // Skip for now
+                DeclarationKind::Enum(Some((_, variant))) => {
+                    out.push(DocItem::Variant(DocVariant {
+                        ident: dec.name.ident.as_str().into(),
+                        fields: variant
+                            .fields
+                            .iter()
+                            .map(|field| self.print_ty(field))
+                            .collect(),
+                        doc: dec.doc.clone(),
+                    }));
+                }
+                DeclarationKind::Enum(None) => {
+                    // Unresolved declarations cannot occur in a Runtime.
                 }
                 DeclarationKind::TypeParam(_) => {
                     // Probably skipped forever
@@ -360,13 +421,12 @@ impl Rt {
         out
     }
 
-    fn split_items(
-        items: &[DocItem],
-    ) -> (Vec<&DocFn>, Vec<&DocConst>, Vec<&DocTy>, Vec<&DocMod>) {
+    fn split_items(items: &[DocItem]) -> SplitDocItems<'_> {
         let mut fs = Vec::new();
         let mut cs = Vec::new();
         let mut ts = Vec::new();
         let mut ms = Vec::new();
+        let mut variants = Vec::new();
 
         for item in items {
             match item {
@@ -374,6 +434,7 @@ impl Rt {
                 DocItem::Fn(f) => fs.push(f),
                 DocItem::Ty(t) => ts.push(t),
                 DocItem::Mod(m) => ms.push(m),
+                DocItem::Variant(v) => variants.push(v),
             }
         }
 
@@ -381,7 +442,14 @@ impl Rt {
         cs.sort();
         ts.sort();
         ms.sort();
+        variants.sort();
 
-        (fs, cs, ts, ms)
+        SplitDocItems {
+            functions: fs,
+            constants: cs,
+            types: ts,
+            modules: ms,
+            variants,
+        }
     }
 }

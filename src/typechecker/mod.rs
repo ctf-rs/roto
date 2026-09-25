@@ -392,6 +392,69 @@ impl TypeChecker {
         Ok(())
     }
 
+    pub(crate) fn declare_runtime_enum(
+        &mut self,
+        scope: ScopeRef,
+        ident: Identifier,
+        type_id: TypeId,
+        doc: String,
+        variants: Vec<(Identifier, u8, String, Vec<Type>)>,
+    ) -> Result<(), String> {
+        let name = ResolvedName { scope, ident };
+        let ident_meta = Meta {
+            node: ident,
+            id: MetaId(0),
+        };
+        let enum_variants: Vec<_> = variants
+            .iter()
+            .map(|(name, tag, _, fields)| EnumVariant {
+                name: *name,
+                tag: usize::from(*tag),
+                fields: fields.clone(),
+            })
+            .collect();
+        let ty = TypeDefinition::RuntimeEnum(
+            TypeName {
+                name,
+                arguments: Vec::new(),
+            },
+            enum_variants.clone(),
+            type_id,
+        );
+
+        self.type_info
+            .scope_graph
+            .insert_type(scope, &ident_meta, doc, ty.clone())
+            .map_err(|_| {
+                format!("Item `{ident}` already exists in this scope")
+            })?;
+
+        let enum_scope = self.get_scope_of(scope, ident).unwrap();
+        for ((_, _, doc, _), variant) in
+            variants.into_iter().zip(enum_variants)
+        {
+            let variant_name = variant.name;
+            self.type_info
+                .scope_graph
+                .insert_declaration(
+                    enum_scope,
+                    &Meta {
+                        node: variant_name,
+                        id: MetaId(0),
+                    },
+                    DeclarationKind::Enum(Some((ty.clone(), variant))),
+                    doc,
+                    |_| false,
+                )
+                .map_err(|_| {
+                    format!("Variant `{variant_name}` is declared twice")
+                })?;
+        }
+
+        self.type_info.types.insert(name, ty);
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn declare_runtime_function(
         &mut self,
@@ -481,6 +544,18 @@ impl TypeChecker {
                     .get_runtime_type(ty.type_id)
                     .ok_or_else(|| {
                         format!("unregistered type: {}", ty.rust_name)
+                    })?
+                    .name();
+                Ok(Type::Name(TypeName {
+                    name,
+                    arguments: Vec::new(),
+                }))
+            }
+            TypeDescription::Enum => {
+                let name = runtime
+                    .get_runtime_type(ty.type_id)
+                    .ok_or_else(|| {
+                        format!("unregistered enum type: {}", ty.rust_name)
                     })?
                     .name();
                 Ok(Type::Name(TypeName {
@@ -743,7 +818,7 @@ impl TypeChecker {
 
                         let mut evaluated_variants = Vec::new();
 
-                        for v in &**variants {
+                        for (tag, v) in variants.iter().enumerate() {
                             let fields = v
                                 .fields
                                 .iter()
@@ -754,6 +829,7 @@ impl TypeChecker {
 
                             evaluated_variants.push(EnumVariant {
                                 name: v.ident.node,
+                                tag,
                                 fields,
                             });
                         }

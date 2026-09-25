@@ -174,6 +174,23 @@ fn check_roto_type(
 
             Ok(())
         }
+        TypeDescription::Enum => {
+            let Type::Name(type_name) = roto_type else {
+                return Err(error_message);
+            };
+
+            let TypeDefinition::RuntimeEnum(_, _, id) =
+                type_info.resolve_type_name(type_name.name)
+            else {
+                return Err(error_message);
+            };
+
+            if rust_type.type_id != id {
+                return Err(error_message);
+            }
+
+            Ok(())
+        }
         TypeDescription::Verdict(rust_accept, rust_reject) => {
             let Type::Name(type_name) = &roto_type else {
                 return Err(error_message);

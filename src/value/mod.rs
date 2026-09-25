@@ -24,6 +24,7 @@ use crate::{
 };
 
 pub use dyn_val::DynVal;
+pub use enumeration::{RotoEnum, RotoEnumField, RotoEnumVariant};
 pub(crate) use list::ErasedList;
 pub use list::boundary::List;
 pub use option::RotoOption;
@@ -35,6 +36,7 @@ pub use verdict::Verdict;
 pub use vtable::{CloneFn, DropFn, EqFn, VTable};
 
 mod dyn_val;
+mod enumeration;
 pub mod list;
 mod option;
 mod result;
@@ -63,6 +65,9 @@ pub enum TypeDescription {
 
     /// `Val<T>`
     Val(TypeId),
+
+    /// A Rust-backed enum with a stable Roto representation.
+    Enum,
 }
 
 #[derive(Clone)]
@@ -140,8 +145,8 @@ impl TypeRegistry {
 /// function. Most primitives are simply passed by value, but many other types
 /// are passed by `*mut Value::Transformed`.
 #[diagnostic::on_unimplemented(
-    note = "`Value` is implemented for Roto's built-in types and `Val<T>`.",
-    note = "You cannot implement `Value` for your own types but you can wrap them in `Val<T>`."
+    note = "`Value` is implemented for Roto's built-in types, `Val<T>`, and types deriving `RotoEnum`.",
+    note = "Wrap ordinary custom types in `Val<T>` or derive `RotoEnum` for an enum."
 )]
 #[sealed(pub(crate))]
 pub trait Value: Sized + 'static {
@@ -327,6 +332,24 @@ impl<T> Param<Val<T>> for *mut T {
             return Err(IrValueDoesNotMatchType);
         };
         Ok(mem.read_slice(p, std::mem::size_of::<T>()).as_ptr() as *mut T)
+    }
+}
+
+#[sealed]
+impl<T: RotoEnum> Value for T {
+    type Transformed = T::Repr;
+    type AsParam = *mut Self::Transformed;
+
+    fn transform(self) -> Self::Transformed {
+        self.into_repr()
+    }
+
+    fn untransform(transformed: Self::Transformed) -> Self {
+        Self::from_repr(transformed)
+    }
+
+    fn resolve() -> Ty {
+        enumeration::resolve_enum::<T>()
     }
 }
 

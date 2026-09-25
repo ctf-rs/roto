@@ -1,7 +1,7 @@
-use std::any::TypeId;
+use std::{any::TypeId, collections::HashSet};
 
 use crate::runtime::extern_eq;
-use crate::value::{EqFn, TypeDescription};
+use crate::value::{EqFn, RotoEnum, RotoEnumVariant, TypeDescription};
 use crate::{
     Location, Value,
     ast::Identifier,
@@ -9,7 +9,7 @@ use crate::{
         CloneDrop, ConstantValue, Movability, RegistrationError, Rt,
         extern_clone, extern_drop,
         func::{FunctionDescription, RegisterableFn},
-        layout::Layout,
+        layout::{Layout, LayoutBuilder},
     },
 };
 
@@ -196,9 +196,10 @@ impl From<Module> for Item {
 /// a cheap [`Clone`] and [`Drop`] implementations, for example an
 /// [`Rc`](std::rc::Rc) or an [`Arc`](std::sync::Arc).
 ///
-/// Use one of the [`Type::clone`] or [`Type::copy`] constructors to construct
-/// this type. [`Type::copy`] will generally be more performant than
-/// [`Type::clone`], so you should prefer that if the type implements [`Copy`].
+/// Use [`Type::clone`] or [`Type::copy`] for opaque Rust types, and
+/// [`Type::enumeration`] for enums deriving [`RotoEnum`]. [`Type::copy`] will
+/// generally be more performant than [`Type::clone`], so you should prefer
+/// that if an opaque type implements [`Copy`].
 ///
 /// <div class="warning">
 ///
@@ -215,6 +216,7 @@ pub struct Type {
     pub(crate) layout: Layout,
     pub(crate) movability: Movability,
     pub(crate) eq_fn: EqFn,
+    pub(crate) enum_variants: Option<Vec<RotoEnumVariant>>,
     pub(crate) location: Location,
 }
 
@@ -271,6 +273,153 @@ impl Type {
         Self::new::<T>(name, doc, Movability::Copy, location)
     }
 
+    /// A Rust enum represented by a stable Roto-owned enum layout.
+    ///
+    /// Implement [`RotoEnum`] with `#[derive(RotoEnum)]`, then register the
+    /// enum with this constructor. Tuple-style variants may contain zero or
+    /// more fields. Their names and field types become ordinary Roto enum
+    /// variants and can be used in constructors and `match` patterns.
+    ///
+    /// ```rust
+    /// use roto::{RotoEnum, Runtime, Type, Val, location};
+    ///
+    /// #[derive(Clone, PartialEq)]
+    /// struct Payload(u32);
+    ///
+    /// #[derive(RotoEnum)]
+    /// enum Message {
+    ///     Empty,
+    ///     Number(u32),
+    ///     Payload(#[roto(val)] Payload),
+    /// }
+    ///
+    /// let mut runtime = Runtime::new();
+    /// runtime
+    ///     .add([
+    ///         Type::clone::<Val<Payload>>(
+    ///             "Payload",
+    ///             "A payload.",
+    ///             location!(),
+    ///         )
+    ///         .unwrap(),
+    ///         Type::enumeration::<Message>(
+    ///             "Message",
+    ///             "A message.",
+    ///             location!(),
+    ///         )
+    ///         .unwrap(),
+    ///     ])
+    ///     .unwrap();
+    /// ```
+    pub fn enumeration<T: RotoEnum>(
+        name: impl Into<Identifier>,
+        doc: impl AsRef<str>,
+        location: Location,
+    ) -> Result<Self, RegistrationError> {
+        let name = name.into();
+        Rt::check_name(&location, name)?;
+
+        let ty = T::resolve();
+        if ty.description != TypeDescription::Enum {
+            return Err(RegistrationError {
+                message: format!(
+                    "`{}` does not resolve to a Rust-backed Roto enum",
+                    ty.rust_name
+                ),
+                location,
+            });
+        }
+
+        let variants = T::variants();
+        if variants.is_empty() {
+            return Err(RegistrationError {
+                message: "A Rust-backed Roto enum needs at least one variant"
+                    .into(),
+                location,
+            });
+        }
+        if variants.len() > u8::MAX as usize + 1 {
+            return Err(RegistrationError {
+                message:
+                    "A Rust-backed Roto enum can have at most 256 variants"
+                        .into(),
+                location,
+            });
+        }
+
+        let mut names = HashSet::new();
+        let mut tags = HashSet::new();
+        let mut expected_layout = None;
+        for variant in &variants {
+            let variant_name = Identifier::from(variant.name());
+            Rt::check_name(&location, variant_name)?;
+            if !names.insert(variant_name) {
+                return Err(RegistrationError {
+                    message: format!(
+                        "Enum variant `{variant_name}` is declared twice"
+                    ),
+                    location,
+                });
+            }
+            if !tags.insert(variant.tag()) {
+                return Err(RegistrationError {
+                    message: format!(
+                        "Enum tag {} is used by more than one variant",
+                        variant.tag()
+                    ),
+                    location,
+                });
+            }
+
+            let mut builder = LayoutBuilder::new();
+            builder.add(&Layout::of::<u8>());
+            for field in variant.fields() {
+                builder.add(field.layout());
+            }
+            let variant_layout = builder.finish();
+            expected_layout = Some(
+                expected_layout
+                    .map_or(variant_layout.clone(), |layout: Layout| {
+                        layout.union(&variant_layout)
+                    }),
+            );
+        }
+
+        let layout = Layout::of::<T::Repr>();
+        let expected_layout = expected_layout.unwrap();
+        if layout.size() != expected_layout.size()
+            || layout.align() != expected_layout.align()
+        {
+            return Err(RegistrationError {
+                message: format!(
+                    "The stable representation of `{}` has layout size {} align {}, \
+                     but its variants require size {} align {}",
+                    ty.rust_name,
+                    layout.size(),
+                    layout.align(),
+                    expected_layout.size(),
+                    expected_layout.align(),
+                ),
+                location,
+            });
+        }
+
+        Ok(Self {
+            ident: name,
+            rust_name: std::any::type_name::<T>(),
+            doc: doc.as_ref().into(),
+            type_id: ty.type_id,
+            layout,
+            movability: Movability::CloneDrop(CloneDrop {
+                clone: extern_clone::<T::Repr>,
+                drop: extern_drop::<T::Repr>,
+            }),
+            eq_fn: extern_eq::<T::Repr>,
+            enum_variants: Some(variants),
+            location,
+        })
+    }
+
     /// For internal use only, might lead to unexpected behaviour if used incorrectly
     pub(crate) fn value<T: Value + Copy + PartialEq>(
         name: impl Into<Identifier>,
@@ -298,12 +447,15 @@ impl Type {
             TypeDescription::Verdict(_, _) => false,
             TypeDescription::Result(_, _) => false,
             TypeDescription::List(_) => false,
+            TypeDescription::Enum => false,
         };
 
         if !is_allowed {
             return Err(RegistrationError {
                 message: format!(
-                    "Cannot register the type `{}`. Only `Val<T>` types can be registered",
+                    "Cannot register the type `{}` as an opaque type. Use \
+                     `Val<T>` for ordinary custom types or \
+                     `Type::enumeration` for a type implementing `RotoEnum`",
                     ty.rust_name
                 ),
                 location,
@@ -322,6 +474,7 @@ impl Type {
             layout: ty.layout,
             movability,
             eq_fn,
+            enum_variants: None,
             location,
         })
     }

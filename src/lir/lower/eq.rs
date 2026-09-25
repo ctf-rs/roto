@@ -10,7 +10,7 @@ use crate::{
         Block, FloatCmp, Instruction, IntCmp, IrType, IrValue, Item,
         ItemKind, Operand, Signature, Var, VarKind,
     },
-    mir::{Ty, TyRef},
+    mir::{EnumVariant, Ty, TyRef},
     runtime::layout::{Layout, LayoutBuilder},
     typechecker::{
         scope::{ScopeRef, ScopeType},
@@ -355,7 +355,7 @@ impl Lowerer<'_, '_> {
         &mut self,
         left_base: Var,
         right_base: Var,
-        variants: &[(Identifier, Vec<TyRef>)],
+        variants: &[EnumVariant],
     ) {
         let current_label = self.current_label();
         let lbl_prefix = self
@@ -411,18 +411,19 @@ impl Lowerer<'_, '_> {
         // This block matches on the left discriminant.
         self.new_block(match_lbl);
 
-        let branches: Vec<(usize, LabelRef)> =
-            variant_lbls.iter().copied().enumerate().collect();
+        let branches: Vec<(usize, LabelRef)> = variants
+            .iter()
+            .zip(&variant_lbls)
+            .map(|(variant, label)| (variant.tag, *label))
+            .collect();
         self.emit_switch(
             left_discriminant.into(),
             branches.clone(),
             false_lbl,
         );
 
-        for (idx, variant_lbl) in branches {
-            let variant = &variants[idx];
-
-            let lbls: Vec<LabelRef> = (0..=variant.1.len())
+        for (variant, variant_lbl) in variants.iter().zip(variant_lbls) {
+            let lbls: Vec<LabelRef> = (0..=variant.fields.len())
                 .map(|i| {
                     let ident = Identifier::from(&format!("field_{i}"));
                     self.ctx.label_store.wrap_internal(variant_lbl, ident)
@@ -430,7 +431,7 @@ impl Lowerer<'_, '_> {
                 .collect();
 
             let Some(layouts) = variant
-                .1
+                .fields
                 .iter()
                 .map(|ty| {
                     let layout = self.layout_of(*ty)?;

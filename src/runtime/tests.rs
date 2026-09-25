@@ -1,9 +1,9 @@
 #![allow(unused_imports)]
 
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
 use crate::{
-    library,
+    RotoEnum, library,
     runtime::items::Registerable as _,
     value::{RotoString, Val},
 };
@@ -182,6 +182,119 @@ fn register_val_option_arc_str() {
         #[clone] type OptStr = Val<Option<RotoString>>;
     })
     .unwrap();
+}
+
+#[test]
+fn register_rust_backed_enum() {
+    #[derive(Clone, PartialEq)]
+    struct Payload(u32);
+
+    #[derive(RotoEnum)]
+    enum External {
+        Unit,
+        Pair(u32, #[roto(val)] Payload),
+    }
+
+    let runtime = Runtime::from_lib(library! {
+        #[enum_type] type External = External;
+        #[clone] type Payload = Val<Payload>;
+    })
+    .unwrap();
+
+    let ty = runtime
+        .types()
+        .iter()
+        .find(|ty| ty.name().ident.as_str() == "External")
+        .unwrap();
+    let variants = ty.enum_variants().unwrap();
+    assert_eq!(variants.len(), 2);
+    assert_eq!(variants[0].name(), "Unit");
+    assert!(variants[0].fields().is_empty());
+    assert_eq!(variants[1].name(), "Pair");
+    assert_eq!(variants[1].fields().len(), 2);
+    assert_eq!(variants[0].tag(), 0);
+    assert_eq!(variants[1].tag(), 1);
+}
+
+#[test]
+fn rust_backed_enum_rejects_duplicate_tags() {
+    enum External {
+        First,
+        Second,
+    }
+
+    #[repr(u8)]
+    #[derive(Clone, PartialEq)]
+    enum ExternalRepr {
+        First = 1,
+        Second = 2,
+    }
+
+    unsafe impl RotoEnum for External {
+        type Repr = ExternalRepr;
+
+        fn into_repr(self) -> Self::Repr {
+            match self {
+                Self::First => ExternalRepr::First,
+                Self::Second => ExternalRepr::Second,
+            }
+        }
+
+        fn from_repr(repr: Self::Repr) -> Self {
+            match repr {
+                ExternalRepr::First => Self::First,
+                ExternalRepr::Second => Self::Second,
+            }
+        }
+
+        fn variants() -> Vec<crate::RotoEnumVariant> {
+            vec![
+                crate::RotoEnumVariant::new("First", 1, "", vec![]),
+                crate::RotoEnumVariant::new("Second", 1, "", vec![]),
+            ]
+        }
+    }
+
+    let error = crate::Type::enumeration::<External>(
+        "External",
+        "",
+        crate::location!(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("tag 1"));
+}
+
+#[test]
+fn rust_backed_enum_appears_in_generated_documentation() {
+    #[derive(RotoEnum)]
+    enum External {
+        /// No associated data.
+        Unit,
+        /// A number and a flag.
+        Pair(u32, bool),
+    }
+
+    let runtime = Runtime::from_lib(library! {
+        /// An enum supplied by the embedding application.
+        #[enum_type] type External = External;
+    })
+    .unwrap();
+
+    let output = std::env::current_dir()
+        .unwrap()
+        .join("target")
+        .join("rust-backed-enum-doc-test");
+    let _ = fs::remove_dir_all(&output);
+    runtime.print_documentation(&output).unwrap();
+
+    let docs = fs::read_to_string(output.join("External/index.md")).unwrap();
+    assert!(docs.contains("An enum supplied by the embedding application."));
+    assert!(docs.contains("{roto:variant} Unit"));
+    assert!(docs.contains("No associated data."));
+    assert!(docs.contains("{roto:variant} Pair(u32, bool)"));
+    assert!(docs.contains("A number and a flag."));
+
+    fs::remove_dir_all(output).unwrap();
 }
 
 // This is a bit of a weird case, it should probably at least warn, but

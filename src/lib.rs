@@ -40,7 +40,7 @@ pub use pipeline::{
     RotoDiagnosticSeverity, RotoReport,
 };
 pub use roto_macros::{
-    Context, roto_function, roto_method, roto_static_method,
+    Context, RotoEnum, roto_function, roto_method, roto_static_method,
 };
 pub use roto_syntax as syntax;
 pub use runtime::{
@@ -52,7 +52,9 @@ pub use runtime::{
         Use,
     },
 };
-pub use value::{RotoString, Val, Value, Verdict};
+pub use value::{
+    RotoEnum, RotoEnumField, RotoEnumVariant, RotoString, Val, Value, Verdict,
+};
 
 /// Create a list of items to be registered.
 ///
@@ -94,10 +96,11 @@ pub use value::{RotoString, Val, Value, Verdict};
 ///
 /// ## Types
 ///
-/// Types are declared with a `type` alias style syntax. The declaration must
-/// be  annotated with either `#[clone]` or `#[copy]`. Only types implementing
+/// Types are declared with a `type` alias style syntax. Opaque types must be
+/// annotated with either `#[clone]` or `#[copy]`. Only types implementing
 /// `Copy` can be marked with `#[copy]`. Since the Rust type (the right-hand
-/// side) must implement [`Value`], you should wrap any custom type in `Val`.
+/// side) must implement [`Value`], you should wrap any ordinary custom type
+/// in [`Val`]. Rust-backed enums use `#[enum_type]` as described below.
 ///
 /// ```rust
 /// # #[derive(Clone, Copy, PartialEq)]
@@ -111,6 +114,35 @@ pub use value::{RotoString, Val, Value, Verdict};
 /// #[copy] type Foo = Val<Foo>;
 /// # };
 /// ```
+///
+/// Rust enums can be exposed as structural Roto enums with
+/// `#[derive(RotoEnum)]` and `#[enum_type]`. Enum fields that already
+/// implement [`Value`] need no annotation. An ordinary cloneable Rust payload
+/// uses the normal [`Val`] boundary representation by annotating that field
+/// with `#[roto(val)]`.
+///
+/// ```rust
+/// use roto::{RotoEnum, Val};
+///
+/// #[derive(Clone, PartialEq)]
+/// struct Payload(u32);
+///
+/// #[derive(RotoEnum)]
+/// enum Message {
+///     Empty,
+///     Number(u32),
+///     Payload(#[roto(val)] Payload),
+/// }
+///
+/// # roto::library! {
+/// #[clone] type Payload = Val<Payload>;
+/// #[enum_type] type Message = Message;
+/// # };
+/// ```
+///
+/// The derive converts the Rust enum to a Roto-owned `#[repr(u8)]`
+/// representation at the runtime boundary. Roto therefore never relies on
+/// the unspecified layout of the original Rust enum.
 ///
 /// ## Functions
 ///

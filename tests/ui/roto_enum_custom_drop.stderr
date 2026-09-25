@@ -1,0 +1,10 @@
+error[E0119]: conflicting implementations of trait `RotoEnumRequiresNoCustomDrop` for type `CustomDrop`
+ --> tests/ui/roto_enum_custom_drop.rs:3:10
+  |
+3 | #[derive(RotoEnum)]
+  |          ^^^^^^^^
+  |          |
+  |          first implementation here
+  |          conflicting implementation for `CustomDrop`
+  |
+  = note: this error originates in the derive macro `RotoEnum` (in Nightly builds, run with -Z macro-backtrace for more info)

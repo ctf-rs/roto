@@ -420,6 +420,9 @@ pub struct RuntimeType {
 
     /// Docstring of the type to display in documentation
     _docstring: String,
+
+    /// Variants for a Rust-backed enum.
+    enum_variants: Option<Vec<crate::RotoEnumVariant>>,
 }
 
 impl RuntimeType {
@@ -441,6 +444,11 @@ impl RuntimeType {
 
     pub fn layout(&self) -> Layout {
         self.layout.clone()
+    }
+
+    /// Return this type's variants if it is a Rust-backed enum.
+    pub fn enum_variants(&self) -> Option<&[crate::RotoEnumVariant]> {
+        self.enum_variants.as_deref()
     }
 }
 
@@ -585,6 +593,15 @@ impl Rt {
         scope: ScopeRef,
         items: &[Item],
     ) -> Result<(), RegistrationError> {
+        self.register_type_metadata(scope, items)?;
+        self.declare_type_definitions(scope, items)
+    }
+
+    fn register_type_metadata(
+        &mut self,
+        scope: ScopeRef,
+        items: &[Item],
+    ) -> Result<(), RegistrationError> {
         for item in items {
             match item {
                 Item::Module(module) => {
@@ -592,16 +609,18 @@ impl Rt {
                         .type_checker
                         .get_scope_of(scope, module.ident)
                         .unwrap();
-                    self.declare_types(scope, &module.children)?;
+                    self.register_type_metadata(scope, &module.children)?;
                 }
-                Item::Type(ty) => self.declare_type(scope, ty)?,
+                Item::Type(ty) => {
+                    self.register_type_metadata_item(scope, ty)?
+                }
                 _ => {}
             }
         }
         Ok(())
     }
 
-    fn declare_type(
+    fn register_type_metadata_item(
         &mut self,
         scope: ScopeRef,
         ty: &Type,
@@ -621,13 +640,6 @@ impl Rt {
             });
         }
 
-        self.type_checker
-            .declare_runtime_type(scope, ty.ident, ty.type_id, ty.doc.clone())
-            .map_err(|e| RegistrationError {
-                message: e,
-                location: ty.location.clone(),
-            })?;
-
         let name = ResolvedName {
             scope,
             ident: ty.ident,
@@ -640,8 +652,79 @@ impl Rt {
             eq_fn: ty.eq_fn,
             layout: ty.layout.clone(),
             _docstring: ty.doc.clone(),
+            enum_variants: ty.enum_variants.clone(),
         });
 
+        Ok(())
+    }
+
+    fn declare_type_definitions(
+        &mut self,
+        scope: ScopeRef,
+        items: &[Item],
+    ) -> Result<(), RegistrationError> {
+        for item in items {
+            match item {
+                Item::Module(module) => {
+                    let scope = self
+                        .type_checker
+                        .get_scope_of(scope, module.ident)
+                        .unwrap();
+                    self.declare_type_definitions(scope, &module.children)?;
+                }
+                Item::Type(ty) => {
+                    if let Some(variants) = &ty.enum_variants {
+                        let variants = variants
+                            .iter()
+                            .map(|variant| {
+                                let fields = variant
+                                    .fields()
+                                    .iter()
+                                    .map(|field| {
+                                        self.rust_type_to_roto_type(
+                                            &ty.location,
+                                            field.type_id(),
+                                        )
+                                    })
+                                    .collect::<Result<Vec<_>, _>>()?;
+                                Ok((
+                                    Identifier::from(variant.name()),
+                                    variant.tag(),
+                                    variant.doc().to_owned(),
+                                    fields,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, RegistrationError>>()?;
+
+                        self.type_checker
+                            .declare_runtime_enum(
+                                scope,
+                                ty.ident,
+                                ty.type_id,
+                                ty.doc.clone(),
+                                variants,
+                            )
+                            .map_err(|e| RegistrationError {
+                                message: e,
+                                location: ty.location.clone(),
+                            })?;
+                    } else {
+                        self.type_checker
+                            .declare_runtime_type(
+                                scope,
+                                ty.ident,
+                                ty.type_id,
+                                ty.doc.clone(),
+                            )
+                            .map_err(|e| RegistrationError {
+                                message: e,
+                                location: ty.location.clone(),
+                            })?;
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -1037,7 +1120,14 @@ impl Rt {
         // All fields in the context must be known because they'll
         // be accessible from Roto.
         for field in &description.fields {
-            self.find_type(field.type_id, field.type_name)?;
+            let ty = self.find_type(field.type_id, field.type_name)?;
+            if ty.description == TypeDescription::Enum {
+                return Err(format!(
+                    "Rust-backed enum `{}` cannot be used directly as a \
+                     context field because context fields are not transformed",
+                    field.type_name
+                ));
+            }
         }
 
         self.context = Some(description);

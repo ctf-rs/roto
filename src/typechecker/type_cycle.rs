@@ -58,9 +58,14 @@ fn visit_name(
 
     visited.insert(name, false);
     match &types[&name] {
-        TypeDefinition::Enum(_, variants) => {
+        TypeDefinition::Enum(_, variants)
+        | TypeDefinition::RuntimeEnum(_, variants, _) => {
             for variant in variants {
-                let EnumVariant { name: _, fields } = variant;
+                let EnumVariant {
+                    name: _,
+                    tag: _,
+                    fields,
+                } = variant;
                 for field_ty in fields {
                     visit(types, visited, field_ty)?;
                 }

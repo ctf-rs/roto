@@ -66,10 +66,16 @@ These limitations are fundamental to the design of Roto. They stem from the
 fact that Roto is a scripting language and that Rust's reflection system is
 limited.
 
-- All registered Rust types must implement `Clone` or `Copy`. Rust types that
-  don't implement these traits should be wrapped in an `Rc` or `Arc`. The reason
-  for this limitation is that Roto does not have references and freely clones
-  values.
+- All opaque registered Rust types must implement `Clone` or `Copy`. Rust types
+  that don't implement these traits should be wrapped in an `Rc` or `Arc`. The
+  reason for this limitation is that Roto does not have references and freely
+  clones values. A Rust-backed enum itself does not need to implement `Clone`,
+  but each of its field representations does.
+- Tuple-style Rust enums can be registered as structural Roto enums with
+  `#[derive(RotoEnum)]` and `#[enum_type]` in `library!`. The derive uses a
+  stable Roto-owned representation rather than relying on Rust's default enum
+  layout. Ordinary custom payloads use `#[roto(val)]`; primitive and other
+  `Value` payloads need no field annotation.
 - It is not possible to register types that are not concrete. For example,
   `Vec<u32>` is possible, but `Vec<T>` is not. We plan to support registering
   generic via some form of type erasure.

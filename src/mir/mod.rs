@@ -20,6 +20,7 @@ use crate::{
     },
 };
 pub use lower::lower_to_mir;
+pub(crate) use ty::EnumVariant;
 pub use ty::{Pool, Signature, Ty, TyRef};
 
 /// Human-readable place

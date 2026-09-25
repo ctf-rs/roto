@@ -62,6 +62,7 @@ routecore = { version = "0.7", features = ["bgp", "bmp", "serde"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 tempfile = "3.27.0"
+trybuild = "1.0"
 
 [profile.profiling]
 inherits = "release"

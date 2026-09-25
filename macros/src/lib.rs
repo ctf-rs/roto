@@ -2,6 +2,211 @@ use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use syn::{Error, Token, parse::Parse, parse_macro_input, spanned::Spanned};
 
+#[proc_macro_derive(RotoEnum, attributes(roto))]
+pub fn roto_enum(item: TokenStream) -> TokenStream {
+    let item = parse_macro_input!(item as syn::DeriveInput);
+    derive_roto_enum(item)
+        .unwrap_or_else(Error::into_compile_error)
+        .into()
+}
+
+fn derive_roto_enum(
+    item: syn::DeriveInput,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let enum_name = item.ident;
+    let visibility = item.vis;
+    if !item.generics.params.is_empty() {
+        return Err(Error::new(
+            item.generics.span(),
+            "`RotoEnum` does not support generic Rust enums",
+        ));
+    }
+
+    let syn::Data::Enum(data) = item.data else {
+        return Err(Error::new(
+            enum_name.span(),
+            "`RotoEnum` can only be derived for enums",
+        ));
+    };
+    if data.variants.is_empty() {
+        return Err(Error::new(
+            enum_name.span(),
+            "`RotoEnum` requires at least one variant",
+        ));
+    }
+    if data.variants.len() > u8::MAX as usize + 1 {
+        return Err(Error::new(
+            enum_name.span(),
+            "`RotoEnum` supports at most 256 variants",
+        ));
+    }
+
+    let repr_name = syn::Ident::new(
+        &format!("__RotoEnumRepr{enum_name}"),
+        enum_name.span(),
+    );
+    let mut repr_variants = Vec::new();
+    let mut into_arms = Vec::new();
+    let mut from_arms = Vec::new();
+    let mut descriptions = Vec::new();
+
+    for (tag, variant) in data.variants.into_iter().enumerate() {
+        let tag = tag as u8;
+        let variant_name = variant.ident;
+        let variant_doc = gather_docstring(&variant.attrs);
+        let syn::Fields::Unnamed(fields) = variant.fields else {
+            if matches!(variant.fields, syn::Fields::Unit) {
+                repr_variants.push(quote!(#variant_name));
+                into_arms.push(
+                    quote!(#enum_name::#variant_name => #repr_name::#variant_name),
+                );
+                from_arms.push(
+                    quote!(#repr_name::#variant_name => #enum_name::#variant_name),
+                );
+                descriptions.push(quote! {
+                    roto::RotoEnumVariant::new(
+                        stringify!(#variant_name),
+                        #tag,
+                        #variant_doc,
+                        vec![],
+                    )
+                });
+                continue;
+            }
+            return Err(Error::new(
+                variant_name.span(),
+                "`RotoEnum` only supports tuple-style and unit variants",
+            ));
+        };
+
+        let mut repr_fields = Vec::new();
+        let mut bindings = Vec::new();
+        let mut into_fields = Vec::new();
+        let mut from_fields = Vec::new();
+        let mut field_descriptions = Vec::new();
+
+        for (index, field) in fields.unnamed.into_iter().enumerate() {
+            let ty = field.ty;
+            let use_val = enum_field_uses_val(&field.attrs)?;
+            let value_ty = if use_val {
+                quote!(roto::Val<#ty>)
+            } else {
+                quote!(#ty)
+            };
+            let binding =
+                syn::Ident::new(&format!("__field_{index}"), ty.span());
+
+            repr_fields.push(quote!(<#value_ty as roto::Value>::Transformed));
+            bindings.push(binding.clone());
+            if use_val {
+                into_fields.push(quote! {
+                    <#value_ty as roto::Value>::transform(
+                        roto::Val(unsafe {
+                            std::ptr::read(#binding)
+                        })
+                    )
+                });
+                from_fields.push(quote! {
+                    <#value_ty as roto::Value>::untransform(#binding).0
+                });
+            } else {
+                into_fields.push(quote! {
+                    <#value_ty as roto::Value>::transform(unsafe {
+                        std::ptr::read(#binding)
+                    })
+                });
+                from_fields.push(quote! {
+                    <#value_ty as roto::Value>::untransform(#binding)
+                });
+            }
+            field_descriptions.push(quote! {
+                roto::RotoEnumField::of::<#value_ty>()
+            });
+        }
+
+        repr_variants.push(quote!(#variant_name(#(#repr_fields),*)));
+        into_arms.push(quote! {
+            #enum_name::#variant_name(#(#bindings),*) => {
+                #repr_name::#variant_name(#(#into_fields),*)
+            }
+        });
+        from_arms.push(quote! {
+            #repr_name::#variant_name(#(#bindings),*) => {
+                #enum_name::#variant_name(#(#from_fields),*)
+            }
+        });
+        descriptions.push(quote! {
+            roto::RotoEnumVariant::new(
+                stringify!(#variant_name),
+                #tag,
+                #variant_doc,
+                vec![#(#field_descriptions),*],
+            )
+        });
+    }
+
+    Ok(quote! {
+        #[doc(hidden)]
+        #[repr(u8)]
+        #[derive(Clone, PartialEq)]
+        #visibility enum #repr_name {
+            #(#repr_variants),*
+        }
+
+        const _: () = {
+            #[allow(dead_code)]
+            trait RotoEnumRequiresNoCustomDrop {}
+
+            impl RotoEnumRequiresNoCustomDrop for #enum_name {}
+
+            #[allow(drop_bounds)]
+            impl<T: Drop> RotoEnumRequiresNoCustomDrop for T {}
+        };
+
+        unsafe impl roto::RotoEnum for #enum_name {
+            type Repr = #repr_name;
+
+            fn into_repr(self) -> Self::Repr {
+                let this = std::mem::ManuallyDrop::new(self);
+                match &*this {
+                    #(#into_arms),*
+                }
+            }
+
+            fn from_repr(repr: Self::Repr) -> Self {
+                match repr {
+                    #(#from_arms),*
+                }
+            }
+
+            fn variants() -> Vec<roto::RotoEnumVariant> {
+                vec![#(#descriptions),*]
+            }
+        }
+    })
+}
+
+fn enum_field_uses_val(attrs: &[syn::Attribute]) -> syn::Result<bool> {
+    let mut use_val = false;
+    for attr in attrs {
+        if !attr.path().is_ident("roto") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("val") {
+                if use_val {
+                    return Err(meta.error("duplicate `val` option"));
+                }
+                use_val = true;
+                Ok(())
+            } else {
+                Err(meta.error("expected `val`"))
+            }
+        })?;
+    }
+    Ok(use_val)
+}
+
 #[proc_macro_derive(Context)]
 pub fn roto_context(item: TokenStream) -> TokenStream {
     let item = parse_macro_input!(item as syn::DeriveInput);
@@ -555,6 +760,7 @@ fn get_movability(
     let mut clone = 0;
     let mut copy = 0;
     let mut value = 0;
+    let mut enumeration = 0;
     let mut ident_span = None;
 
     for attr in attrs {
@@ -568,18 +774,22 @@ fn get_movability(
             } else if p.is_ident("value") {
                 value += 1;
                 ident_span = Some(p.span());
+            } else if p.is_ident("enum_type") {
+                enumeration += 1;
+                ident_span = Some(p.span());
             }
         }
     }
 
-    let s = match (clone, copy, value) {
-        (1, 0, 0) => "clone",
-        (0, 1, 0) => "copy",
-        (0, 0, 1) => "value",
+    let s = match (clone, copy, value, enumeration) {
+        (1, 0, 0, 0) => "clone",
+        (0, 1, 0, 0) => "copy",
+        (0, 0, 1, 0) => "value",
+        (0, 0, 0, 1) => "enumeration",
         _ => {
             return Err(syn::Error::new(
                 span,
-                "specify exactly 1 of `#[clone]`, `#[copy]` or `#[value]`",
+                "specify exactly 1 of `#[clone]`, `#[copy]`, `#[value]` or `#[enum_type]`",
             ));
         }
     };

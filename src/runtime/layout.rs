@@ -1,6 +1,6 @@
 //! Layout computations for Roto
 //!
-//! The layout of Roto types follows the C-representation of Rust types.
+//! Roto uses C-style field layout for records and enum variants.
 
 /// Layout of a Roto or Rust type
 ///

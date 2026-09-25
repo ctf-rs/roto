@@ -138,7 +138,9 @@ impl Lowerer<'_> {
                     Pattern::EnumVariant { variant, .. } => Some(
                         variants
                             .iter()
-                            .position(|s| s.0 == variant.node)
+                            .position(|candidate| {
+                                candidate.name == variant.node
+                            })
                             .unwrap(),
                     ),
                     Pattern::Underscore => None,
@@ -163,7 +165,7 @@ impl Lowerer<'_> {
 
         let switch_branches = all_discriminants
             .iter()
-            .map(|(d, lbl)| (*d, *lbl))
+            .map(|(d, lbl)| (variants[*d].tag, *lbl))
             .collect();
 
         // We need to know for the switch whether there are any default
@@ -241,7 +243,7 @@ impl Lowerer<'_> {
             {
                 let variant = &variants[discriminant.unwrap()];
                 for (field_binding, &field_ty) in
-                    fields.iter().zip(&variant.1)
+                    fields.iter().zip(&variant.fields)
                 {
                     let name = self.type_info.resolved_name(field_binding);
                     let var = Var {
@@ -276,7 +278,7 @@ impl Lowerer<'_> {
         &mut self,
         examinee: Var,
         examinee_ty: TyRef,
-        variant: Option<&(Identifier, Vec<TyRef>)>,
+        variant: Option<&crate::mir::EnumVariant>,
         lbl: LabelRef,
         branches: &[&(Option<usize>, &ast::MatchArm, usize)],
         arm_labels: &HashMap<usize, LabelRef>,
@@ -312,7 +314,7 @@ impl Lowerer<'_> {
             {
                 let variant = variant.unwrap();
                 for (i, (field_binding, &field_ty)) in
-                    fields.iter().zip(&variant.1).enumerate()
+                    fields.iter().zip(&variant.fields).enumerate()
                 {
                     let name = self.type_info.resolved_name(field_binding);
                     let var = Var {
@@ -327,7 +329,8 @@ impl Lowerer<'_> {
                             var: examinee.clone(),
                             root_ty: examinee_ty,
                             projection: vec![Projection::VariantField(
-                                variant.0, i,
+                                variant.name,
+                                i,
                             )],
                         }),
                     );

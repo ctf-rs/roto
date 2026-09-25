@@ -123,6 +123,7 @@ pub enum MustBeSigned {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TypeDefinition {
     Enum(TypeName, Vec<EnumVariant>),
+    RuntimeEnum(TypeName, Vec<EnumVariant>, TypeId),
     Record(TypeName, Vec<(Meta<Identifier>, Type)>),
     Runtime(ResolvedName, TypeId),
     Primitive(Primitive),
@@ -132,6 +133,7 @@ pub enum TypeDefinition {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EnumVariant {
     pub name: Identifier,
+    pub tag: usize,
     pub fields: Vec<Type>,
 }
 
@@ -211,6 +213,7 @@ impl TypeDefinition {
     pub fn type_name(&self) -> TypeName {
         match self {
             TypeDefinition::Enum(type_name, _) => type_name.clone(),
+            TypeDefinition::RuntimeEnum(type_name, _, _) => type_name.clone(),
             TypeDefinition::Record(type_name, _) => type_name.clone(),
             TypeDefinition::List(type_name) => type_name.clone(),
             TypeDefinition::Runtime(resolved_name, _) => TypeName {
@@ -238,8 +241,12 @@ impl TypeDefinition {
         &self,
         type_args: &[Type],
     ) -> Option<Vec<EnumVariant>> {
-        let TypeDefinition::Enum(type_name, variants) = self else {
-            return None;
+        let (type_name, variants) = match self {
+            TypeDefinition::Enum(type_name, variants)
+            | TypeDefinition::RuntimeEnum(type_name, variants, _) => {
+                (type_name, variants)
+            }
+            _ => return None,
         };
 
         assert_eq!(type_name.arguments.len(), type_args.len());
@@ -285,6 +292,7 @@ impl EnumVariant {
             .collect();
         EnumVariant {
             name: self.name,
+            tag: self.tag,
             fields,
         }
     }
@@ -406,6 +414,9 @@ impl TypeDisplay for TypeDefinition {
     ) -> core::fmt::Result {
         match self {
             TypeDefinition::Enum(type_name, _) => {
+                Display::fmt(&type_name.display(type_info), f)
+            }
+            TypeDefinition::RuntimeEnum(type_name, _, _) => {
                 Display::fmt(&type_name.display(type_info), f)
             }
             TypeDefinition::Record(type_name, _) => {
@@ -829,9 +840,10 @@ pub fn default_types() -> Vec<(Identifier, String, TypeDefinition)> {
 
         let variants = variants
             .into_iter()
-            .map(|(variant_name, fields)| {
+            .enumerate()
+            .map(|(tag, (variant_name, fields))| {
                 let name = Identifier::from(variant_name);
-                EnumVariant { name, fields }
+                EnumVariant { name, tag, fields }
             })
             .collect();
 

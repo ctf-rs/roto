@@ -1,7 +1,9 @@
 use crate::file_tree::{FileSpec, FileTree};
 use crate::pipeline::RotoReport;
 use crate::runtime::OptCtx;
-use crate::{Context, Runtime, library, source_file, src, value::Val};
+use crate::{
+    Context, RotoEnum, Runtime, library, source_file, src, value::Val,
+};
 
 #[track_caller]
 fn typecheck(loaded: FileTree) -> Result<(), RotoReport> {
@@ -1278,6 +1280,75 @@ fn simple_constant_mismatch() {
     );
 
     typecheck(s).unwrap_err();
+}
+
+#[test]
+fn rust_backed_enum_match_must_be_exhaustive() {
+    #[derive(RotoEnum)]
+    enum External {
+        Unit,
+        Pair(u32, bool),
+    }
+
+    let rt = Runtime::from_lib(library! {
+        #[enum_type] type External = External;
+    })
+    .unwrap();
+    let source = src!(
+        r#"
+        fn inspect(value: External) -> u32 {
+            match value {
+                Pair(number, enabled) => {
+                    if enabled { number } else { 0 }
+                },
+            }
+        }
+    "#
+    );
+
+    assert!(typecheck_with_runtime(source, rt).is_err());
+}
+
+#[test]
+fn rust_backed_enum_patterns_check_variant_and_arity() {
+    #[derive(RotoEnum)]
+    enum External {
+        Unit,
+        Pair(u32, bool),
+    }
+
+    let runtime = || {
+        Runtime::from_lib(library! {
+            #[enum_type] type External = External;
+        })
+        .unwrap()
+    };
+
+    let wrong_arity = src!(
+        r#"
+        fn inspect(value: External) -> u32 {
+            match value {
+                Unit => 0,
+                Pair(number) => number,
+            }
+        }
+    "#
+    );
+    assert!(typecheck_with_runtime(wrong_arity, runtime()).is_err());
+
+    let wrong_variant = src!(
+        r#"
+        fn inspect(value: External) -> u32 {
+            match value {
+                Unit => 0,
+                Missing(number, enabled) => {
+                    if enabled { number } else { 0 }
+                },
+            }
+        }
+    "#
+    );
+    assert!(typecheck_with_runtime(wrong_variant, runtime()).is_err());
 }
 
 #[test]

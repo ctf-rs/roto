@@ -1,6 +1,6 @@
-/// Option-like type for with a C-representation
+/// Option-like type with a stable primitive enum representation.
 ///
-/// This type cannot make use of niches because it uses the C-representation.
+/// This type cannot make use of niches because it uses `repr(u8)`.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RotoOption<T> {

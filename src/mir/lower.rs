@@ -543,9 +543,9 @@ impl<'r> Lowerer<'r> {
         else {
             ice!("`?` examinee is not an enum");
         };
-        let (success_name, _) = variants[0];
-        let (failure_name, failure_fields) = variants[1].clone();
-        let failure_field_ty = failure_fields.first().copied();
+        let success_name = variants[0].name;
+        let failure_name = variants[1].name;
+        let failure_field_ty = variants[1].fields.first().copied();
 
         let discriminant = self.undropped_tmp();
         self.emit_assign(
@@ -601,7 +601,7 @@ impl<'r> Lowerer<'r> {
         let Ty::Enum(variants) = self.type_info.ty_pool.get(ty) else {
             ice!("expected a 2-variant enum (Option, Result or Verdict)");
         };
-        (variants[0].0, variants[1].0)
+        (variants[0].name, variants[1].name)
     }
 
     /// Emits a two-way branch on the discriminant of `receiver` (an
@@ -722,7 +722,7 @@ impl<'r> Lowerer<'r> {
                     else {
                         ice!();
                     };
-                    variants[0].1[0]
+                    variants[0].fields[0]
                 };
                 this.make_enum(
                     target_ty,
@@ -738,7 +738,7 @@ impl<'r> Lowerer<'r> {
                         else {
                             ice!();
                         };
-                        variants[1].1[0]
+                        variants[1].fields[0]
                     };
                     this.make_enum(
                         target_ty,
@@ -784,7 +784,7 @@ impl<'r> Lowerer<'r> {
             else {
                 ice!();
             };
-            variants[0].1[0]
+            variants[0].fields[0]
         };
 
         let recv_for_some = receiver.clone();
@@ -858,7 +858,7 @@ impl<'r> Lowerer<'r> {
                 ice!("enclosing function does not return a Verdict");
             };
             let idx = if early.is_accept() { 0 } else { 1 };
-            variants[idx].1[0]
+            variants[idx].fields[0]
         };
         let payload = match &arg {
             Some((var, _)) => Value::Move(var.clone()),
@@ -1203,8 +1203,10 @@ impl<'r> Lowerer<'r> {
             ice!("Not an enum")
         };
 
-        let Some(&(variant_name, _)) =
-            variants.iter().find(|v| v.0 == variant)
+        let Some(variant_name) = variants
+            .iter()
+            .find(|candidate| candidate.name == variant)
+            .map(|variant| variant.name)
         else {
             ice!("Could not find variant to construct")
         };
@@ -1216,10 +1218,7 @@ impl<'r> Lowerer<'r> {
                 Place {
                     var: to.clone(),
                     root_ty: ty,
-                    projection: vec![Projection::VariantField(
-                        variant_name,
-                        i,
-                    )],
+                    projection: vec![Projection::VariantField(variant_name, i)],
                 },
                 *field_ty,
                 value.clone(),

@@ -207,7 +207,12 @@ impl TypeInfo {
             Type::Name(TypeName { name, arguments }) => {
                 let type_def = self.resolve_type_name(name);
                 match type_def {
-                    TypeDefinition::Enum(type_name, enum_variants) => {
+                    TypeDefinition::Enum(type_name, enum_variants)
+                    | TypeDefinition::RuntimeEnum(
+                        type_name,
+                        enum_variants,
+                        _,
+                    ) => {
                         let subs: Vec<_> = type_name
                             .arguments
                             .iter()
@@ -223,7 +228,11 @@ impl TypeInfo {
                                     .iter()
                                     .map(|ty| self.convert(ty))
                                     .collect();
-                                (variant.name, tys)
+                                crate::mir::EnumVariant {
+                                    name: variant.name,
+                                    tag: variant.tag,
+                                    fields: tys,
+                                }
                             })
                             .collect();
 
