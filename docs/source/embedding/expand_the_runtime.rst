@@ -212,6 +212,58 @@ documentation generated for this runtime.
 
 The name ``ONE_HUNDRED`` will then be available in Roto scripts.
 
+.. _add-regex-literals:
+
+Add compiled regex literals
+---------------------------
+
+A host can enable raw regex literals with one ``RegexLiteral`` provider.
+Roto does not include a regex engine or reserve a type named ``Regex``.
+Register your compiled pattern type, then register a callback of type
+``Fn(&str) -> Result<T, String>`` where ``T: Value``. The callback must be
+``Send + Sync + 'static``; custom compiled patterns normally use
+``Val<HostPattern>``.
+
+For example, assuming ``HostPattern`` is registered and has a fallible
+``compile`` method:
+
+.. code-block:: rust
+
+    use roto::{RegexLiteral, Val, location};
+
+    rt.add(RegexLiteral::new(
+        |pattern| HostPattern::compile(pattern)
+            .map(Val)
+            .map_err(|error| error.to_string()),
+        location!(),
+    ))?;
+
+The type and provider may also be registered together in the same library.
+Registering a second provider, or a provider with an unregistered return type,
+is an error.
+
+Scripts can use the provider in module-level constant initializers:
+
+.. code-block:: roto
+    :class: test-ignore
+
+    const DIGITS: HostPattern = r"\d+";
+    const QUOTED: Option[HostPattern] = Some(r#"say "hello""#);
+    const ALIAS: HostPattern = DIGITS;
+
+Patterns reach the callback without delimiters or escape processing. Compilation
+calls it exactly once per literal occurrence, including literals in nested
+constant expressions. A callback error becomes a diagnostic spanning the whole
+literal. Regex literals in function, filter, filtermap or test bodies are
+rejected; those bodies can reference the constants instead.
+
+Successful values are transformed via ``Value`` and stored in the package's
+constant pool. Generated code loads or clones them: it neither constructs a
+pattern string nor invokes the compiler callback. The pool remains alive as long
+as an extracted function exists, even after the runtime and package are dropped.
+Compiling another package builds its own values. A failed compilation drops any
+values it has already built.
+
 .. _add-context:
 
 Add context

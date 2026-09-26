@@ -44,6 +44,7 @@ impl TypeChecker {
         let ctx = Context {
             expected_type: return_type.clone(),
             function_return_type: Some(return_type.clone()),
+            constant_initializer: false,
             item: ResolvedName {
                 scope: outer_scope,
                 ident: **ident,
@@ -90,6 +91,7 @@ impl TypeChecker {
         let ctx = Context {
             expected_type: ret.clone(),
             function_return_type: Some(ret),
+            constant_initializer: false,
             item: ResolvedName {
                 scope: outer_scope,
                 ident: **ident,
@@ -121,6 +123,7 @@ impl TypeChecker {
         let ctx = Context {
             expected_type: ty,
             function_return_type: None,
+            constant_initializer: true,
             item: ResolvedName {
                 scope: outer_scope,
                 ident: **ident,
@@ -131,6 +134,16 @@ impl TypeChecker {
 
         self.expr(scope, &ctx, expr)?;
         self.resolve_obligations()?;
+
+        if let ast::Expr::Literal(literal) = &expr.node
+            && matches!(literal.node, ast::Literal::Regex(_))
+        {
+            let name = self.type_info.regex_literals[&literal.id];
+            let value =
+                self.type_info.compiled_constants.remove(&name).unwrap();
+            self.type_info.compiled_constants.insert(ctx.item, value);
+            self.type_info.regex_literals.insert(literal.id, ctx.item);
+        }
 
         Ok(())
     }
@@ -171,6 +184,7 @@ impl TypeChecker {
         let ctx = Context {
             expected_type: ret.clone(),
             function_return_type: Some(ret),
+            constant_initializer: false,
             item: ResolvedName {
                 scope: outer_scope,
                 ident: *name,

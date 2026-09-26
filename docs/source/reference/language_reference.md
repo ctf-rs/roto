@@ -331,6 +331,40 @@ print(f"x is {{ x }}");
 x is { x }
 :::
 
+(lang_regex_literals)=
+### Compiled Regex Literals
+
+If the embedding host registers a regex literal provider, raw patterns can
+appear in module-level constant initializers:
+
+```roto
+const DIGITS: HostPattern = r"\d+";
+const QUOTED: HostPattern = r#"say "hello""#;
+const HASHED: Option[HostPattern] = Some(r##"text"#more"##);
+```
+{class="test-ignore"}
+
+`HostPattern` is an example host-registered type, not a built-in Roto type.
+The provider determines the literal's type, accepted pattern syntax, and regex
+engine. Without a provider, using a regex literal is a type error.
+
+The `r` prefix may be followed by any number of `#` delimiters before the
+opening quote. A quote closes the literal only when followed by exactly that
+number of consecutive hashes. Quotes with a different hash count stay in the
+body. An empty body, Unicode, and multiple lines are allowed. Reaching the end
+of the file without a matching closing delimiter is an unterminated-literal
+error.
+
+The body is raw: `r"\d"` passes a single backslash followed by `d`, whereas
+`r"\\d"` passes two backslashes followed by `d`. Backslashes do not escape
+quotes or newlines.
+
+The host compiles each literal once during package compilation; errors point
+to the full literal. Literals may occur in nested constant expressions, but not
+in function, filter, filtermap, or test bodies. Those bodies should reference a
+constant instead. Aliasing or cloning a constant does not compile it again.
+See {ref}`add-regex-literals` for host registration.
+
 (lang_lists)=
 ### Lists
 

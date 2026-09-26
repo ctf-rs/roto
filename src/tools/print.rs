@@ -79,6 +79,7 @@ fn highlight(s: &str) -> String {
             Some(Token::Keyword(_)) => ansi::BLUE,
             Some(
                 Token::String(_)
+                | Token::Regex(_)
                 | Token::Char(_)
                 | Token::FStringStart
                 | Token::FStringText(_)
@@ -93,7 +94,7 @@ fn highlight(s: &str) -> String {
                 | Token::IpV6(_)
                 | Token::Bool(_),
             ) => ansi::PURPLE,
-            None => ansi::RED,
+            None | Some(Token::UnterminatedRegex(_)) => ansi::RED,
         };
         highlighted.push_str(color);
         highlighted.push_str(&s[range]);
@@ -113,6 +114,25 @@ fn highlight(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn highlights_raw_regex_as_one_literal() {
+        let literal = "r##\"λ\\d\n\"#{}\"##";
+        let source = format!("const PATTERN: Pattern = {literal};");
+        let highlighted = highlight(&source);
+        assert_eq!(without_ansi(highlighted.clone()), source);
+        assert!(highlighted.contains(&format!(
+            "{}{literal}{}",
+            ansi::GREEN,
+            ansi::RESET
+        )));
+
+        let unterminated = "r##\"λ\\d\n\"#";
+        assert_eq!(
+            highlight(unterminated),
+            format!("{}{unterminated}{}", ansi::RED, ansi::RESET)
+        );
+    }
 
     fn without_ansi(mut text: String) -> String {
         for code in [

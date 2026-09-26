@@ -198,8 +198,12 @@ impl Memory {
                 self.pointers.push(Pointer::Local(p.offset_by(offset)));
                 self.pointers.len() - 1
             }
-            Pointer::Global(_) => {
-                panic!("Don't offset global pointer");
+            Pointer::Global(p) => {
+                // SAFETY: Lowering computes field offsets from the constant's
+                // type layout, just as for a field in a local allocation.
+                let ptr = unsafe { p.ptr.cast::<u8>().add(offset).cast() };
+                self.pointers.push(Pointer::Global(GlobalPointer { ptr }));
+                self.pointers.len() - 1
             }
         }
     }
@@ -287,16 +291,91 @@ impl Allocation {
 pub fn eval(
     rt: &Rt,
     p: &[Item],
+    compiled_constants: &HashMap<ResolvedName, ConstantValue>,
     filter_map: &str,
     mem: &mut Memory,
     ctx: IrValue,
     args: Vec<IrValue>,
 ) -> Option<IrValue> {
-    let filter_map_ident = Identifier::from(format!("pkg.{filter_map}"));
+    let constants: HashMap<ResolvedName, ConstantValue> = rt
+        .constants()
+        .values()
+        .map(|g| (g.name, g.value.clone()))
+        .chain(
+            compiled_constants
+                .iter()
+                .map(|(&name, value)| (name, value.clone())),
+        )
+        .collect();
+    let mut addresses = HashMap::new();
+    for (name, value) in &constants {
+        let pointer = mem.pointers.len();
+        mem.pointers.push(Pointer::Global(GlobalPointer {
+            ptr: value.ptr().cast_mut(),
+        }));
+        addresses.insert(*name, pointer);
+    }
+
+    let mut initialized = Vec::new();
+    for item in p {
+        if let ItemKind::Constant {
+            name,
+            layout,
+            type_id,
+            ..
+        } = &item.kind
+        {
+            let pointer = mem.allocate(layout.as_ref().unwrap().size());
+            eval_item(
+                rt,
+                p,
+                &addresses,
+                item.name,
+                mem,
+                ctx.clone(),
+                vec![IrValue::Pointer(pointer)],
+            );
+            addresses.insert(*name, pointer);
+            initialized.push((*type_id, pointer));
+        }
+    }
+
+    let result = eval_item(
+        rt,
+        p,
+        &addresses,
+        format!("pkg.{filter_map}").into(),
+        mem,
+        ctx.clone(),
+        args,
+    );
+    for (type_id, pointer) in initialized.into_iter().rev() {
+        eval_item(
+            rt,
+            p,
+            &addresses,
+            format!("::generated::drop_{type_id}").into(),
+            mem,
+            ctx.clone(),
+            vec![IrValue::Pointer(pointer)],
+        );
+    }
+    result
+}
+
+fn eval_item(
+    rt: &Rt,
+    p: &[Item],
+    constants: &HashMap<ResolvedName, usize>,
+    name: Identifier,
+    mem: &mut Memory,
+    ctx: IrValue,
+    args: Vec<IrValue>,
+) -> Option<IrValue> {
     let item = p
         .iter()
-        .find(|f| f.name == filter_map_ident)
-        .expect("Need a main function!");
+        .find(|f| f.name == name)
+        .expect("evaluation needs an existing function");
 
     let parameters = match &item.kind {
         ItemKind::Constant { .. } => &[] as &[_],
@@ -317,12 +396,6 @@ pub fn eval(
         block_map.insert(block.label, instructions.len());
         instructions.extend(block.instructions.clone());
     }
-
-    let constants: HashMap<ResolvedName, ConstantValue> = rt
-        .constants()
-        .values()
-        .map(|g| (g.name, g.value.clone()))
-        .collect();
 
     // This is our working memory for the interpreter
     let mut vars = HashMap::<Var, IrValue>::new();
@@ -409,15 +482,7 @@ pub fn eval(
                 panic!("Getting a function address on eval is not supported.")
             }
             Instruction::ConstantAddress { to, name } => {
-                let x = constants.get(name).unwrap();
-                let x = x.ptr();
-                mem.pointers.push(Pointer::Global(GlobalPointer {
-                    ptr: x as *mut (),
-                }));
-                vars.insert(
-                    to.clone(),
-                    IrValue::Pointer(mem.pointers.len() - 1),
-                );
+                vars.insert(to.clone(), IrValue::Pointer(constants[name]));
             }
             Instruction::Call {
                 to,

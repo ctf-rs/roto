@@ -192,8 +192,12 @@ impl<'r> Lowerer<'r> {
                         );
                     }
                     ast::Declaration::Const(x) => {
+                        let name = type_info.resolved_name(&x.ident);
+                        if type_info.compiled_constants.contains_key(&name) {
+                            continue;
+                        }
                         items.insert(
-                            type_info.resolved_name(&x.ident),
+                            name,
                             Lowerer::new(
                                 runtime,
                                 type_info,
@@ -1027,6 +1031,12 @@ impl<'r> Lowerer<'r> {
     fn literal(&mut self, literal: &Meta<ast::Literal>) -> Value {
         let ty = self.type_info.type_of(literal);
         let ty = self.type_info.convert(&ty);
+        if matches!(literal.node, Literal::Regex(_)) {
+            return Value::Constant(
+                self.type_info.regex_literals[&literal.id],
+                ty,
+            );
+        }
         Value::Const((**literal).clone(), ty)
     }
 
@@ -1218,7 +1228,10 @@ impl<'r> Lowerer<'r> {
                 Place {
                     var: to.clone(),
                     root_ty: ty,
-                    projection: vec![Projection::VariantField(variant_name, i)],
+                    projection: vec![Projection::VariantField(
+                        variant_name,
+                        i,
+                    )],
                 },
                 *field_ty,
                 value.clone(),
@@ -1991,10 +2004,19 @@ impl<'r> Lowerer<'r> {
                 })
             }
             ValueKind::Constant => {
-                if !fields.is_empty() {
-                    panic!("Getting fields of constants not supported yet")
+                let value = Value::Constant(*name, root_ty);
+                if fields.is_empty() {
+                    return value;
                 }
-                Value::Constant(*name, root_ty)
+                let var = self.assign_to_var(value, root_ty);
+                Value::Clone(Place {
+                    var,
+                    root_ty,
+                    projection: fields
+                        .iter()
+                        .map(|f| Projection::Field(f.0))
+                        .collect(),
+                })
             }
             ValueKind::Context(x) => Value::Context(*x),
         }

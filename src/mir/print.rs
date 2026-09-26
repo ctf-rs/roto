@@ -260,6 +260,18 @@ impl Printable for Literal {
     fn print(&self, _printer: &IrPrinter) -> String {
         match self {
             Literal::String(str) => str.into(),
+            Literal::Regex(pattern) => {
+                let hashes = pattern
+                    .split('"')
+                    .skip(1)
+                    .map(|tail| {
+                        tail.bytes().take_while(|&b| b == b'#').count() + 1
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let delimiter = "#".repeat(hashes);
+                format!("r{delimiter}\"{pattern}\"{delimiter}")
+            }
             Literal::Char(c) => c.to_string(),
             Literal::Asn(asn) => asn.to_string(),
             Literal::IpAddress(ip) => ip.to_string(),

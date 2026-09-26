@@ -230,6 +230,7 @@ impl<C: OptCtx> Runtime<C> {
     ///  - [`Constant`]
     ///  - [`Impl`]
     ///  - [`Use`]
+    ///  - [`RegexLiteral`](crate::RegexLiteral)
     ///
     /// Or you can register an [`Item`] which combines all the above.
     /// Additionally, you can register collections of these types, such
@@ -332,6 +333,39 @@ impl Rt {
         self.declare_functions(root, &items)?;
         self.declare_constants(root, &items)?;
         self.declare_imports(root, &items)?;
+        self.declare_regex_literals(&items)?;
+        Ok(())
+    }
+
+    fn declare_regex_literals(
+        &mut self,
+        items: &[Item],
+    ) -> Result<(), RegistrationError> {
+        for item in items {
+            match item {
+                Item::Module(module) => {
+                    self.declare_regex_literals(&module.children)?
+                }
+                Item::Impl(implementation) => {
+                    self.declare_regex_literals(&implementation.children)?;
+                }
+                Item::RegexLiteral(provider) => {
+                    if self.type_checker.regex_literal.is_some() {
+                        return Err(RegistrationError {
+                            message: "Only one regex literal provider can be registered".into(),
+                            location: provider.location.clone(),
+                        });
+                    }
+                    let ty = self.rust_type_to_roto_type(
+                        &provider.location,
+                        provider.type_id,
+                    )?;
+                    self.type_checker.regex_literal =
+                        Some((provider.clone(), ty));
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 
@@ -564,6 +598,7 @@ impl Rt {
                 Item::Constant(_) => {}
                 Item::Impl(_) => {}
                 Item::Use(_) => {}
+                Item::RegexLiteral(_) => {}
                 Item::Module(module) => self.declare_module(scope, module)?,
             }
         }
@@ -804,6 +839,7 @@ impl Rt {
                 }
                 Item::Use(_) => {}
                 Item::Constant(_) => {}
+                Item::RegexLiteral(_) => {}
             }
         }
 
@@ -1045,6 +1081,7 @@ impl Rt {
                 Item::Type(_) => {}
                 Item::Constant(_) => {}
                 Item::Impl(_) => {}
+                Item::RegexLiteral(_) => {}
                 Item::Use(use_item) => {
                     self.declare_import(scope, use_item)?
                 }

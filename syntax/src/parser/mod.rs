@@ -65,6 +65,15 @@ impl<'source> Parser<'source, '_> {
                 hints: Vec::new(),
             }
             .into()),
+            Some((Ok(Token::UnterminatedRegex(_)), span)) => {
+                Err(ParseError {
+                    kind: ParseErrorKind::UnterminatedRegexLiteral,
+                    location: Span::new(self.file, span),
+                    note: None,
+                    hints: Vec::new(),
+                }
+                .into())
+            }
             Some((Ok(token), span)) => {
                 Ok((token, Span::new(self.file, span)))
             }
@@ -208,10 +217,15 @@ impl<'source, 'spans> Parser<'source, 'spans> {
                 return Err(err);
             }
         };
-        if let Some((_, s)) = p.lexer.next() {
+        if let Some((token, span)) = p.lexer.next() {
+            let kind = if matches!(token, Ok(Token::UnterminatedRegex(_))) {
+                ParseErrorKind::UnterminatedRegexLiteral
+            } else {
+                ParseErrorKind::FailedToParseEntireInput
+            };
             return Err(ParseError {
-                kind: ParseErrorKind::FailedToParseEntireInput,
-                location: Span::new(file, s),
+                kind,
+                location: Span::new(file, span),
                 note: None,
                 hints: Vec::new(),
             }

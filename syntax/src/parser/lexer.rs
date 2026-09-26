@@ -118,6 +118,7 @@ impl<'s> Lexer<'s> {
         self.hex_number()?;
         self.number()?;
         self.f_string()?;
+        self.regex()?;
         self.string()?;
         self.char()?;
         self.keyword_or_ident()?;
@@ -492,6 +493,32 @@ impl<'s> Lexer<'s> {
 
         let (tok, span) = self.bump_to(tail);
         ControlFlow::Break((Token::String(tok), span))
+    }
+
+    fn regex(&mut self) -> ControlFlow<(Token<'s>, Range<usize>)> {
+        let Some(tail) = self.input.strip_prefix('r') else {
+            return ControlFlow::Continue(());
+        };
+        let hashes = tail.bytes().take_while(|&b| b == b'#').count();
+        if tail.as_bytes().get(hashes) != Some(&b'"') {
+            return ControlFlow::Continue(());
+        }
+
+        let body_start = hashes + 2;
+        for (offset, _) in self.input[body_start..].match_indices('"') {
+            let after_quote = body_start + offset + 1;
+            let closing_hashes = self.input[after_quote..]
+                .bytes()
+                .take_while(|&b| b == b'#')
+                .count();
+            if closing_hashes == hashes {
+                let (tok, span) = self.bump(after_quote + hashes);
+                return ControlFlow::Break((Token::Regex(tok), span));
+            }
+        }
+
+        let (tok, span) = self.bump(self.input.len());
+        ControlFlow::Break((Token::UnterminatedRegex(tok), span))
     }
 
     fn keyword_or_ident(&mut self) -> ControlFlow<(Token<'s>, Range<usize>)> {

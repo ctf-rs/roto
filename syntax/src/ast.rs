@@ -302,6 +302,8 @@ pub struct RecordType {
 #[derive(Clone, Debug)]
 pub enum Literal {
     String(String),
+    /// A raw regex pattern compiled by the host's registered literal provider.
+    Regex(String),
     Char(char),
     Asn(Asn),
     IpAddress(std::net::IpAddr),

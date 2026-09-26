@@ -161,6 +161,7 @@ pub enum ParseErrorKind {
     EndOfInput,
     FailedToParseEntireInput,
     InvalidToken,
+    UnterminatedRegexLiteral,
     Expected {
         expected: String,
         got: String,
@@ -182,6 +183,9 @@ impl ParseErrorKind {
             Self::EndOfInput => "reached end of input".into(),
             Self::FailedToParseEntireInput => "parser got stuck here".into(),
             Self::InvalidToken => "invalid token".into(),
+            Self::UnterminatedRegexLiteral => {
+                "expected a closing quote with matching hashes".into()
+            }
             Self::Expected { expected, .. } => {
                 format!("expected {expected}")
             }
@@ -216,6 +220,9 @@ impl std::fmt::Display for ParseErrorKind {
                 write!(f, "failed to parse entire input")
             }
             Self::InvalidToken => write!(f, "invalid token"),
+            Self::UnterminatedRegexLiteral => {
+                write!(f, "unterminated regex literal")
+            }
             Self::Expected { expected, got, .. } => {
                 write!(f, "expected {expected} but got '{got}'")
             }

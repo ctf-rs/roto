@@ -512,6 +512,7 @@ impl<Ctx: OptCtx> LoweredToLir<'_, Ctx> {
         eval::eval(
             &self.runtime.rt,
             &self.ir.functions,
+            &self.type_info.compiled_constants,
             "main",
             mem,
             ctx,
@@ -564,3 +565,6 @@ impl<C: Context> Package<Ctx<C>> {
         codegen::testing::run_tests(&mut self.module, Ctx(ctx))
     }
 }
+
+#[cfg(all(test, not(miri)))]
+mod regex_tests;

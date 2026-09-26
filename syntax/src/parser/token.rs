@@ -56,6 +56,10 @@ pub enum Token<'s> {
 
     // === Literals ===
     String(&'s str),
+    /// A raw regex literal, including its `r` prefix and matching delimiters.
+    Regex(&'s str),
+    /// A raw regex literal that reaches EOF without its closing delimiter.
+    UnterminatedRegex(&'s str),
     Char(&'s str),
     Integer(&'s str, &'s str),
     Float(&'s str, &'s str),
@@ -164,6 +168,7 @@ impl Display for Token<'_> {
 
             // Literals
             Token::String(s) => s,
+            Token::Regex(s) | Token::UnterminatedRegex(s) => s,
             Token::Char(s) => s,
             Token::Integer(s, suffix) => {
                 f.write_str(s)?;

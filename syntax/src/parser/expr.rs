@@ -603,6 +603,8 @@ impl Parser<'_, '_> {
                 | Token::IpV6(_)
                 | Token::Asn(_)
                 | Token::String(_)
+                | Token::Regex(_)
+                | Token::UnterminatedRegex(_)
         )
     }
 
@@ -810,6 +812,12 @@ impl Parser<'_, '_> {
                 };
                 let unescaped = unescape_str(trimmed, span)?;
                 Literal::String(unescaped)
+            }
+            Token::Regex(s) => {
+                let hashes =
+                    s.bytes().skip(1).take_while(|&b| b == b'#').count();
+                let pattern = &s[hashes + 2..s.len() - hashes - 1];
+                Literal::Regex(pattern.to_owned())
             }
             Token::Char(s) => {
                 // Trim the quotes from the string literal

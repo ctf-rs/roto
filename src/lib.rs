@@ -48,8 +48,8 @@ pub use runtime::{
     context::{Context, ContextDescription},
     func::RegisterableFn,
     items::{
-        Constant, Function, Impl, Item, Library, Module, Registerable, Type,
-        Use,
+        Constant, Function, Impl, Item, Library, Module, RegexLiteral,
+        Registerable, Type, Use,
     },
 };
 pub use value::{

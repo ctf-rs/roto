@@ -33,6 +33,9 @@ pub struct Context {
     /// The type that the current function should return.
     pub function_return_type: Option<Type>,
 
+    /// Whether this expression is inside a module-level constant initializer.
+    pub constant_initializer: bool,
+
     /// The name of the item we are currently in
     pub item: ResolvedName,
 }
@@ -663,6 +666,42 @@ impl TypeChecker {
 
         let t = match &lit.node {
             String(_) => Type::string(),
+            Regex(pattern) => {
+                if !ctx.constant_initializer {
+                    return Err(self.error_simple(
+                        "regex literals are only allowed in module-level constant initializers",
+                        "move this regex literal to a module-level constant",
+                        span,
+                    ));
+                }
+                let Some((provider, ty)) = self.regex_literal.clone() else {
+                    return Err(self.error_simple(
+                        "no regex literal provider is registered",
+                        "the host must register a regex literal provider",
+                        span,
+                    ));
+                };
+                self.unify(&ctx.expected_type, &ty, span, None)?;
+
+                if !self.type_info.regex_literals.contains_key(&span) {
+                    let value =
+                        (provider.compiler)(pattern).map_err(|error| {
+                            self.error_simple(
+                                format!("invalid regex literal: {error}"),
+                                error,
+                                span,
+                            )
+                        })?;
+                    // `#` cannot occur in a source or registered identifier.
+                    let name = ResolvedName {
+                        scope: ScopeRef::GLOBAL,
+                        ident: format!("regex#{}", span.0).into(),
+                    };
+                    self.type_info.compiled_constants.insert(name, value);
+                    self.type_info.regex_literals.insert(span, name);
+                }
+                ty
+            }
             Char(_) => Type::char(),
             Asn(_) => Type::asn(),
             IpAddress(_) => Type::ip_addr(),

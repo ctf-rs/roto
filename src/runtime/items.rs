@@ -1,4 +1,4 @@
-use std::{any::TypeId, collections::HashSet};
+use std::{any::TypeId, collections::HashSet, sync::Arc};
 
 use crate::runtime::extern_eq;
 use crate::value::{EqFn, RotoEnum, RotoEnumVariant, TypeDescription};
@@ -39,6 +39,9 @@ pub enum Item {
 
     /// A use statement
     Use(Use),
+
+    /// Compiler support for the host-provided `r"..."` literal.
+    RegexLiteral(RegexLiteral),
 }
 
 /// Trait implemented by items that can be registered into the [`Runtime`].
@@ -617,6 +620,88 @@ impl Registerable for Function {
 impl From<Function> for Item {
     fn from(value: Function) -> Self {
         Item::Function(value)
+    }
+}
+
+type RegexCompiler =
+    dyn Fn(&str) -> Result<ConstantValue, String> + Send + Sync + 'static;
+
+/// Host implementation of Roto's raw, compiled regex literals.
+///
+/// Register one provider with [`Runtime::add`](super::Runtime::add), after
+/// registering its return type (or in the same library as that type). Regex
+/// literals infer that type; no particular type name or regex engine is required.
+/// A runtime rejects a second provider.
+///
+/// Literals are only allowed in module-level constant initializers, including
+/// nested expressions. Their raw patterns are compiled during type checking,
+/// once per literal occurrence per compilation. The resulting values are owned
+/// by the compiled package and remain alive while any extracted function exists.
+/// Calling or cloning a function never calls the compiler callback again.
+#[derive(Clone)]
+pub struct RegexLiteral {
+    pub(crate) type_id: TypeId,
+    pub(crate) compiler: Arc<RegexCompiler>,
+    pub(crate) location: Location,
+}
+
+impl std::fmt::Debug for RegexLiteral {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegexLiteral")
+            .field("type_id", &self.type_id)
+            .field("location", &self.location)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RegexLiteral {
+    /// Create a regex literal provider with a fallible compiler callback.
+    ///
+    /// `compiler` receives the pattern without delimiters or escape processing.
+    /// Return a user-facing error message rather than panicking: errors become
+    /// compiler diagnostics spanning the complete literal. Successful values
+    /// are transformed through [`Value`] and retained as owned constants.
+    /// There is no runtime constructor or separate validation callback.
+    ///
+    /// `location` identifies this registration in errors; use [`crate::location!`].
+    ///
+    /// ```
+    /// use roto::{RegexLiteral, Runtime, Type, Val, location};
+    ///
+    /// #[derive(Clone, PartialEq)]
+    /// struct Pattern(String);
+    ///
+    /// let mut runtime = Runtime::new();
+    /// runtime.add(Type::clone::<Val<Pattern>>("Pattern", "", location!()).unwrap()).unwrap();
+    /// runtime.add(RegexLiteral::new(
+    ///     |pattern| Ok(Val(Pattern(pattern.to_owned()))),
+    ///     location!(),
+    /// )).unwrap();
+    /// ```
+    pub fn new<T: Value>(
+        compiler: impl Fn(&str) -> Result<T, String> + Send + Sync + 'static,
+        location: Location,
+    ) -> Self {
+        Self {
+            type_id: T::resolve().type_id,
+            compiler: Arc::new(move |pattern| {
+                compiler(pattern)
+                    .map(|value| ConstantValue::new(value.transform()))
+            }),
+            location,
+        }
+    }
+}
+
+impl Registerable for RegexLiteral {
+    fn add_to_lib(self, lib: &mut Library) {
+        lib.add(self.into())
+    }
+}
+
+impl From<RegexLiteral> for Item {
+    fn from(value: RegexLiteral) -> Self {
+        Item::RegexLiteral(value)
     }
 }
 

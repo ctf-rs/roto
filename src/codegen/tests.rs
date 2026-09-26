@@ -4764,9 +4764,7 @@ fn rust_backed_enum_uses_registered_non_contiguous_tags() {
     );
 
     let mut pkg = compile_with_runtime(s, rt);
-    let inspect = pkg
-        .get_function::<fn(External) -> u32>("inspect")
-        .unwrap();
+    let inspect = pkg.get_function::<fn(External) -> u32>("inspect").unwrap();
     assert_eq!(inspect.call(External::Request(12)), 12);
     assert_eq!(inspect.call(External::Response(true)), 1);
 

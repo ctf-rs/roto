@@ -366,7 +366,7 @@ pub fn codegen<Ctx: OptCtx>(
     ir: &[lir::Item],
     runtime_functions: &HashMap<RuntimeFunctionRef, lir::Signature>,
     label_store: LabelStore,
-    type_info: TypeInfo,
+    mut type_info: TypeInfo,
 ) -> Module<Ctx> {
     let runtime = &runtime.rt;
 
@@ -430,7 +430,7 @@ pub fn codegen<Ctx: OptCtx>(
         .push(AbiParam::new(cranelift::codegen::ir::types::I32));
 
     let mut module = ModuleBuilder {
-        runtime_constants: HashMap::new(),
+        runtime_constants: std::mem::take(&mut type_info.compiled_constants),
         roto_constants: HashMap::new(),
         functions: HashMap::new(),
         registered_fns: Vec::new(),

@@ -7,6 +7,7 @@ use crate::{
     ice,
     mir::{Ty, TyRef},
     parser::meta::MetaId,
+    runtime::ConstantValue,
     typechecker::types::TypeName,
 };
 
@@ -49,6 +50,12 @@ pub struct TypeInfo {
 
     /// The function that is called on each function call
     pub(super) function_calls: HashMap<MetaId, Function>,
+
+    /// Constant-pool entry for each compiled regex literal.
+    pub(crate) regex_literals: HashMap<MetaId, ResolvedName>,
+
+    /// Owned host values built during this compilation, never runtime calls.
+    pub(crate) compiled_constants: HashMap<ResolvedName, ConstantValue>,
 
     pub(super) function_signatures: HashMap<MetaId, Signature>,
 

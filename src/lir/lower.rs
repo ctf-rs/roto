@@ -651,9 +651,7 @@ impl Lowerer<'_, '_> {
 
                         let mut last_ty = None;
                         let mut new_offset = 0;
-                        for &field_ty in
-                            variant.fields.iter().take(n + 1)
-                        {
+                        for &field_ty in variant.fields.iter().take(n + 1) {
                             new_offset =
                                 builder.add(&self.layout_of(field_ty)?);
                             last_ty = Some(field_ty);
@@ -794,6 +792,11 @@ impl Lowerer<'_, '_> {
     /// Lower a literal
     fn literal(&mut self, lit: &Literal, ty: TyRef) -> Option<Operand> {
         Some(match &lit {
+            Literal::Regex(_) => {
+                ice!(
+                    "regex literals must be lowered to constant loads in MIR"
+                )
+            }
             Literal::String(s) => {
                 let layout = Primitive::String.layout();
                 let to = self.new_stack_slot(layout);

@@ -101,7 +101,7 @@ use crate::{
     ice,
     module::{Module, ModuleTree},
     parser::meta::{Meta, MetaId},
-    runtime::{Rt, RuntimeFunctionRef},
+    runtime::{Rt, RuntimeFunctionRef, items::RegexLiteral},
     typechecker::types::EnumVariant,
 };
 use scope::{
@@ -153,6 +153,7 @@ enum Obligation {
 #[derive(Clone)]
 pub struct TypeChecker {
     pub(crate) type_info: TypeInfo,
+    pub(crate) regex_literal: Option<(RegexLiteral, Type)>,
     match_counter: usize,
     if_else_counter: usize,
     while_counter: usize,
@@ -183,6 +184,7 @@ impl TypeChecker {
     pub fn new() -> Self {
         let mut checker = TypeChecker {
             type_info: TypeInfo::new(),
+            regex_literal: None,
             match_counter: 0,
             if_else_counter: 0,
             while_counter: 0,
