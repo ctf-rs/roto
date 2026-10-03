@@ -8,7 +8,7 @@ use std::{
 };
 
 use crate::{
-    Context, FileTree, List, NoCtx, RotoEnum, Runtime,
+    Context, FileTree, FreshFunctionError, List, NoCtx, RotoEnum, Runtime,
     file_tree::FileSpec,
     library,
     pipeline::Package,
@@ -6821,6 +6821,91 @@ fn list_get_from_const() {
     let f = pkg.get_function::<fn() -> Option<i32>>("main").unwrap();
 
     assert_eq!(f.call(), Some(42));
+}
+
+#[test]
+fn fresh_function_reinitializes_mutable_constants() {
+    let s = src!(
+        r#"
+        const VALUES: List[i32] = [42];
+        fn main() -> u64 {
+            VALUES.push(7);
+            VALUES.len()
+        }
+        "#
+    );
+
+    let pkg = compile(s);
+    let mut function = pkg
+        .into_fresh_function::<fn() -> u64>("main")
+        .expect("exclusive function");
+
+    assert_eq!(function.call_tuple(&mut NoCtx, ()), 2);
+    assert_eq!(function.call_tuple(&mut NoCtx, ()), 2);
+    assert_eq!(function.call_tuple(&mut NoCtx, ()), 2);
+}
+
+#[test]
+fn fresh_function_rejects_outstanding_shared_handles() {
+    let s = src!(
+        r#"
+        fn main() -> u64 {
+            42
+        }
+        "#
+    );
+
+    let mut pkg = compile(s);
+    let shared = pkg.get_function::<fn() -> u64>("main").unwrap();
+    let error = pkg
+        .into_fresh_function::<fn() -> u64>("main")
+        .expect_err("shared handle must prevent exclusive conversion");
+    assert!(matches!(error, FreshFunctionError::SharedModuleHandles));
+    assert_eq!(shared.call(), 42);
+}
+
+#[test]
+fn fresh_function_keeps_previous_owned_returns_alive() {
+    let s = src!(
+        r#"
+        const VALUES: List[u64] = [42];
+        fn main() -> List[u64] {
+            VALUES.push(7);
+            VALUES
+        }
+        "#
+    );
+
+    let pkg = compile(s);
+    let mut function = pkg
+        .into_fresh_function::<fn() -> List<u64>>("main")
+        .expect("exclusive function");
+    let first = function.call_tuple(&mut NoCtx, ());
+    let second = function.call_tuple(&mut NoCtx, ());
+
+    assert_eq!(first.to_vec(), vec![42, 7]);
+    assert_eq!(second.to_vec(), vec![42, 7]);
+}
+
+#[test]
+fn fresh_function_rebuilds_constant_aliases_in_dependency_order() {
+    let s = src!(
+        r#"
+        const PRIMARY: List[u64] = [1];
+        const ALIAS: List[u64] = PRIMARY;
+        fn main() -> u64 {
+            ALIAS.push(2);
+            PRIMARY.len() * 10 + ALIAS.len()
+        }
+        "#
+    );
+
+    let pkg = compile(s);
+    let mut function = pkg
+        .into_fresh_function::<fn() -> u64>("main")
+        .expect("exclusive function");
+    assert_eq!(function.call_tuple(&mut NoCtx, ()), 22);
+    assert_eq!(function.call_tuple(&mut NoCtx, ()), 22);
 }
 
 #[test]

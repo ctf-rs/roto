@@ -548,6 +548,19 @@ impl<Ctx: OptCtx> Package<Ctx> {
     ) -> Result<TypedFunc<Ctx, F>, FunctionRetrievalError> {
         self.module.get_function(name)
     }
+
+    /// Consume this package and retrieve an exclusively owned function whose
+    /// mutable script constants are freshly initialized for every call.
+    ///
+    /// Conversion fails when a previously extracted [`TypedFunc`] still owns
+    /// a shared module handle.
+    pub fn into_fresh_function<F: RotoFunc>(
+        self,
+        name: &str,
+    ) -> Result<codegen::FreshFunction<Ctx, F>, codegen::FreshFunctionError>
+    {
+        self.module.into_fresh_function(name)
+    }
 }
 
 impl Package<NoCtx> {

@@ -32,7 +32,9 @@ pub(crate) use pipeline::{source_file, src};
 
 use crate::ast::{Declaration, Identifier};
 pub use crate::value::List;
-pub use codegen::{TypedFunc, check::RotoFunc};
+pub use codegen::{
+    FreshFunction, FreshFunctionError, TypedFunc, check::RotoFunc,
+};
 pub use file_tree::{FileSpec, FileTree, SourceFile};
 pub(crate) use pipeline::RotoError;
 pub use pipeline::{
