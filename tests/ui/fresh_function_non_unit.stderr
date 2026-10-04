@@ -1,0 +1,13 @@
+error[E0271]: type mismatch resolving `<fn() -> List<RotoString> as RotoFunc>::Return == ()`
+  --> tests/ui/fresh_function_non_unit.rs:16:32
+   |
+16 |         .into_fresh_function::<fn() -> List<roto::RotoString>>("main")
+   |                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `()`, found `List<RotoString>`
+   |
+   = note: expected unit type `()`
+                 found struct `roto::List<RotoString>`
+note: required by a bound in `Package::<Ctx>::into_fresh_function`
+  --> src/pipeline.rs
+   |
+   |     pub fn into_fresh_function<F: RotoFunc<Return = ()>>(
+   |                                            ^^^^^^^^^^^ required by this bound in `Package::<Ctx>::into_fresh_function`

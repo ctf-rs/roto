@@ -274,7 +274,7 @@ impl<C: OptCtx, F: RotoFunc> TypedFunc<C, F> {
     }
 }
 
-impl<C: OptCtx, F: RotoFunc> FreshFunction<C, F> {
+impl<C: OptCtx, F: RotoFunc<Return = ()>> FreshFunction<C, F> {
     /// Reset mutable script constants and invoke the function.
     ///
     /// The first call uses the package's already initialized constants.
@@ -1632,7 +1632,7 @@ impl<Ctx: OptCtx> Module<Ctx> {
         })
     }
 
-    pub(crate) fn into_fresh_function<F: RotoFunc>(
+    pub(crate) fn into_fresh_function<F: RotoFunc<Return = ()>>(
         mut self,
         name: &str,
     ) -> Result<FreshFunction<Ctx, F>, FreshFunctionError> {

@@ -554,7 +554,7 @@ impl<Ctx: OptCtx> Package<Ctx> {
     ///
     /// Conversion fails when a previously extracted [`TypedFunc`] still owns
     /// a shared module handle.
-    pub fn into_fresh_function<F: RotoFunc>(
+    pub fn into_fresh_function<F: RotoFunc<Return = ()>>(
         self,
         name: &str,
     ) -> Result<codegen::FreshFunction<Ctx, F>, codegen::FreshFunctionError>
